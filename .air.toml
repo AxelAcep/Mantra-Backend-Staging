@@ -1,0 +1,11 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o C:/DevOut/main.exe ./src"
+  bin = "C:/DevOut/main.exe"
+  full_bin = "C:/DevOut/main.exe"
+  
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "vendor"]
+  delay = 1000
