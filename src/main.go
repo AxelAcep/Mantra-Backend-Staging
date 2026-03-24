@@ -4,7 +4,8 @@ import (
 	"log"
 	"mantra/src/config"
 	"mantra/src/routes"
-	"net/http"
+
+	// "net/http"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -27,26 +28,26 @@ func main() {
 	e.Use(middleware.Recover())
 
 	// CORS Configuration
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		// Tambahkan IP Ubuntu Server (10.0.1.56) ke daftar origin
-		AllowOrigins: []string{
-			"http://localhost:5173",
-			"http://127.0.0.1:5173",
-			"http://10.0.1.56:5173", // URL yang akan diakses laptop kamu/rekan kantor
-		},
-		AllowMethods: []string{
-			http.MethodGet,
-			http.MethodPost,
-			http.MethodPut,
-			http.MethodDelete,
-			http.MethodPatch,
-		},
-		AllowHeaders: []string{
-			echo.HeaderOrigin,
-			echo.HeaderContentType,
-			echo.HeaderAuthorization,
-		},
-	}))
+	// e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
+	// 	// Tambahkan IP Ubuntu Server (10.0.1.56) ke daftar origin
+	// 	AllowOrigins: []string{
+	// 		"http://localhost:5173",
+	// 		"http://127.0.0.1:5173",
+	// 		"http://10.0.1.56:5173", // URL yang akan diakses laptop kamu/rekan kantor
+	// 	},
+	// 	AllowMethods: []string{
+	// 		http.MethodGet,
+	// 		http.MethodPost,
+	// 		http.MethodPut,
+	// 		http.MethodDelete,
+	// 		http.MethodPatch,
+	// 	},
+	// 	AllowHeaders: []string{
+	// 		echo.HeaderOrigin,
+	// 		echo.HeaderContentType,
+	// 		echo.HeaderAuthorization,
+	// 	},
+	// }))
 
 	// Static file serving untuk uploads
 	uploadDir := os.Getenv("UPLOAD_DIR")
