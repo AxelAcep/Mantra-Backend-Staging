@@ -18,4 +18,6 @@ func UserRoutes(e *echo.Echo) {
 	g.PUT("/:id", controllers.EditUser, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.DELETE("/:id", controllers.DeleteUser, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/all", controllers.GetAllPegawai, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.POST("/forgot-password", controllers.ForgotPassword)
+	g.POST("/reset-password", controllers.ResetPassword)
 }

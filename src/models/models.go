@@ -89,15 +89,17 @@ type Pegawai struct {
 }
 
 type User struct {
-	ID        string     `gorm:"primaryKey" json:"id"`
-	Email     string     `gorm:"uniqueIndex;not null" json:"email"`
-	Password  string     `gorm:"not null" json:"-"`
-	Role      Role       `gorm:"default:KARYAWAN;not null;index" json:"role"` // + index: filter by role
-	PegawaiID string     `gorm:"uniqueIndex;not null" json:"pegawaiId"`
-	Pegawai   Pegawai    `gorm:"foreignKey:PegawaiID" json:"pegawai,omitempty"`
-	LastLogin *time.Time `json:"lastLogin,omitempty"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	ID           string     `gorm:"primaryKey" json:"id"`
+	Email        string     `gorm:"uniqueIndex;not null" json:"email"`
+	Password     string     `gorm:"not null" json:"-"`
+	Role         Role       `gorm:"default:KARYAWAN;not null;index" json:"role"` // + index: filter by role
+	PegawaiID    string     `gorm:"uniqueIndex;not null" json:"pegawaiId"`
+	Pegawai      Pegawai    `gorm:"foreignKey:PegawaiID" json:"pegawai,omitempty"`
+	LastLogin    *time.Time `json:"lastLogin,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+	ResetToken   string     `json:"-"`
+	TokenExpires *time.Time `json:"-"`
 }
 
 type Activity struct {

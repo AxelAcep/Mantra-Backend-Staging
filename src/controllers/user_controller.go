@@ -1,9 +1,12 @@
 package controllers
 
 import (
+	"encoding/hex"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
+	"net/smtp"
 	"os"
 	"strconv"
 	"time"
@@ -379,4 +382,125 @@ func GetAllPegawai(c echo.Context) error {
 		"data":    pegawais,
 		"message": "Berhasil mengambil data pegawai.",
 	})
+}
+
+type ForgotPasswordRequest struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+func ForgotPassword(c echo.Context) error {
+	type Request struct {
+		Email string `json:"email"`
+	}
+	var req Request
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Format request tidak valid."})
+	}
+
+	// Cari user berdasarkan email
+	var user models.User
+	if err := config.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Email tidak terdaftar."})
+	}
+
+	// FILTER KHUSUS MASTER
+	if user.Role != "MASTER" {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak. Fitur ini hanya untuk akun Master."})
+	}
+
+	// Generate Token & Expiry (1 jam)
+	token := generateRandomToken(30)
+	expiry := time.Now().Add(1 * time.Hour)
+
+	// Simpan token ke database
+	user.ResetToken = token
+	user.TokenExpires = &expiry
+	if err := config.DB.Save(&user).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal memproses token reset."})
+	}
+
+	// --- KONFIGURASI SMTP GMAIL ---
+	from := "anfsel13@gmail.com" // Ganti dengan email pengirim
+	password := "rieb uhjb qhdo fosw"
+	smtpHost := "smtp.gmail.com"
+	smtpPort := "587"
+
+	// Link yang akan dikirim ke email
+	resetLink := "http://localhost:5173/reset-password?token=" + token
+
+	// Draft Email (HTML)
+	subject := "Subject: [MASTER] Atur Ulang Kata Sandi CRM\n"
+	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+	body := fmt.Sprintf(`
+		<div style="font-family: sans-serif; max-width: 500px; border: 1px solid #eee; padding: 20px;">
+			<h2 style="color: #06B6D4;">Halo, Master!</h2>
+			<p>Anda menerima email ini karena ada permintaan pengaturan ulang kata sandi untuk akun Master Anda.</p>
+			<p>Silakan klik tombol di bawah ini (berlaku 1 jam):</p>
+			<a href="%s" style="display: inline-block; padding: 10px 20px; background-color: #06B6D4; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+				Atur Ulang Password
+			</a>
+			<p style="margin-top: 20px; color: #888; font-size: 12px;">Jika Anda tidak merasa meminta ini, abaikan email ini.</p>
+			<hr>
+			<p style="font-size: 10px; color: #aaa;">© 2026 CRM PT. Matur Nuwun Nusantara</p>
+		</div>`, resetLink)
+
+	msg := []byte(subject + mime + body)
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+
+	// Kirim Email
+	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{user.Email}, msg)
+	if err != nil {
+		fmt.Println("SMTP Error:", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengirim email reset."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"message": "Link reset password telah dikirim ke email Anda.",
+	})
+}
+
+func ResetPassword(c echo.Context) error {
+	type ResetReq struct {
+		Token          string `json:"token"`
+		PasswordBaru   string `json:"password_baru"`
+		KonfirmasiPass string `json:"konfirmasi_password"`
+	}
+
+	var req ResetReq
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Data tidak valid."})
+	}
+
+	if req.PasswordBaru != req.KonfirmasiPass {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Password tidak cocok."})
+	}
+
+	// 1. Cari user berdasarkan token & pastikan token belum expired
+	var user models.User
+	err := config.DB.Where("reset_token = ? AND token_expires > ?", req.Token, time.Now()).First(&user).Error
+
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Token tidak valid atau sudah kedaluwarsa."})
+	}
+
+	// 2. Hash Password Baru
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(req.PasswordBaru), 10)
+
+	// 3. Update Password dan Hapus Token agar tidak bisa dipakai lagi
+	user.Password = string(hashed)
+	user.ResetToken = ""    // Kosongkan token
+	user.TokenExpires = nil // Kosongkan expiry
+
+	if err := config.DB.Save(&user).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update password."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "Password berhasil diperbarui. Silakan login."})
+}
+
+// Helper untuk generate token string
+func generateRandomToken(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
