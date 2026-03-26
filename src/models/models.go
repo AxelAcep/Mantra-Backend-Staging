@@ -107,7 +107,8 @@ type Activity struct {
 	ParentID               *string               `gorm:"index" json:"parentId,omitempty"` // + index: ambil children
 	Parent                 *Activity             `gorm:"foreignKey:ParentID;references:ID" json:"parent,omitempty"`
 	TerkaitPO              *string               `gorm:"index" json:"terkaitPO,omitempty"` // + index: filter by PO
-	Kategori               KategoriActivity      `gorm:"not null;index" json:"kategori"`   // + index: filter by kategori
+	Perusahaan             *string               `gorm:"index" json:"perusahaan,omitempty"`
+	Kategori               KategoriActivity      `gorm:"not null;index" json:"kategori"` // + index: filter by kategori
 	Judul                  string                `gorm:"not null" json:"judul"`
 	Deskripsi              string                `gorm:"not null" json:"deskripsi"`
 	WaktuMulai             time.Time             `gorm:"not null;index" json:"waktuMulai"`    // + index: sort/range query

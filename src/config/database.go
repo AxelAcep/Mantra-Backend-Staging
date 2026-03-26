@@ -14,7 +14,7 @@ import (
 var DB *gorm.DB
 
 func ConnectDB() {
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := os.Getenv("DATABASE_URL_STAGING")
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
@@ -57,9 +57,9 @@ func ConnectDB() {
 
 func createCompositeIndexes(db *gorm.DB) error {
 	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_activity_pegawai_status ON "Activity" ("pegawaiId", "status")`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_pegawai_status ON "Activity" ("PegawaiId", "status")`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_overdue ON "Activity" ("status", "targetSelesai")`,
-		`CREATE INDEX IF NOT EXISTS idx_notifikasi_pegawai_read ON "Notifikasi" ("pegawaiId", "isRead")`,
+		`CREATE INDEX IF NOT EXISTS idx_notifikasi_pegawai_read ON "Notifikasi" ("PegawaiId", "isRead")`,
 	}
 
 	for _, sql := range indexes {

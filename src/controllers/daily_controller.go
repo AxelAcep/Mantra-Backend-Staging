@@ -53,6 +53,7 @@ type KolaboratorRequest struct {
 
 type CreateActivityRequest struct {
 	TerkaitPO     *string              `json:"terkaitPO"`
+	Perusahaan    *string              `json:"perusahaan"`
 	Kategori      string               `json:"kategori"`
 	Judul         string               `json:"judul"`
 	Deskripsi     string               `json:"deskripsi"`
@@ -99,6 +100,7 @@ func CreateActivity(c echo.Context) error {
 			ID:            generateActivityID(),
 			PegawaiID:     pegawaiID,
 			TerkaitPO:     req.TerkaitPO,
+			Perusahaan:    req.Perusahaan,
 			Kategori:      models.KategoriActivity(req.Kategori),
 			Judul:         req.Judul,
 			Deskripsi:     req.Deskripsi,
@@ -121,6 +123,7 @@ func CreateActivity(c echo.Context) error {
 				PegawaiID:              kol.PegawaiID,
 				ParentID:               &activity.ID,
 				TerkaitPO:              req.TerkaitPO,
+				Perusahaan:             req.Perusahaan,
 				Kategori:               models.KategoriActivity(kol.Kategori),
 				Judul:                  kol.Judul,
 				Deskripsi:              kol.Deskripsi,
@@ -298,8 +301,7 @@ func GetActivityPending(c echo.Context) error {
 	}
 
 	query := baseActivityQuery(pegawaiID).
-		Where("status = ?", models.StatusPending).
-		Where("status = ?", models.StatusKonfirmasiSelesai)
+		Where("status = ? OR status = ?", models.StatusPending, models.StatusKonfirmasiSelesai)
 
 	return paginateActivity(c, query)
 }
@@ -468,6 +470,7 @@ func TambahKolaborator(c echo.Context) error {
 			PegawaiID:              req.PegawaiID,
 			ParentID:               &activity.ID,
 			TerkaitPO:              activity.TerkaitPO,
+			Perusahaan:             activity.Perusahaan,
 			Kategori:               models.KategoriActivity(req.Kategori),
 			Judul:                  req.Judul,
 			Deskripsi:              req.Deskripsi,
@@ -558,7 +561,7 @@ func PengajuanReschedule(c echo.Context) error {
 
 	// Cek target baru harus setelah sekarang
 	if req.TargetSelesaiBaru.Before(time.Now()) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Target selesai baru harus di masa depan."})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mohon pilih target selesai baru yang melewati waktu saat ini."})
 	}
 
 	isOverdue := time.Now().After(activity.TargetSelesai)
