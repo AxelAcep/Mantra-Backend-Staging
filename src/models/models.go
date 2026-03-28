@@ -187,6 +187,11 @@ type Notifikasi struct {
 	CreatedAt  time.Time `gorm:"index" json:"createdAt"`                     // + index: sort notif terbaru
 }
 
+type Perusahaan struct {
+	ID   string `gorm:"primaryKey" json:"id"`
+	Nama string `gorm:"not null" json:"nama"`
+}
+
 func (Pegawai) TableName() string             { return "Pegawai" }
 func (User) TableName() string                { return "User" }
 func (ActivityKolaborator) TableName() string { return "ActivityKolaborator" }
@@ -194,3 +199,4 @@ func (ActivityReschedule) TableName() string  { return "ActivityReschedule" }
 func (ActivityDokumen) TableName() string     { return "ActivityDokumen" }
 func (ActivityChat) TableName() string        { return "ActivityChat" }
 func (Notifikasi) TableName() string          { return "Notifikasi" }
+func (Perusahaan) TableName() string          { return "Perusahaan" }
