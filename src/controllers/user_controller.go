@@ -1,12 +1,14 @@
 package controllers
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
-	"net/smtp"
 	"os"
 	"strconv"
 	"time"
@@ -403,7 +405,7 @@ func ForgotPassword(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Email tidak terdaftar."})
 	}
 
-	// FILTER KHUSUS MASTER
+	// Filter khusus Master
 	if user.Role != "MASTER" {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak. Fitur ini hanya untuk akun Master."})
 	}
@@ -419,18 +421,10 @@ func ForgotPassword(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal memproses token reset."})
 	}
 
-	// --- KONFIGURASI SMTP GMAIL ---
-	from := "anfsel13@gmail.com" // Ganti dengan email pengirim
-	password := "rieb uhjb qhdo fosw"
-	smtpHost := "smtp.gmail.com"
-	smtpPort := "587"
-
-	// Link yang akan dikirim ke email
+	// Link reset
 	resetLink := "https://mantra-frontend-staging-3qwrey5gb-axels-projects-b729bff5.vercel.app/reset-password?token=" + token
 
-	// Draft Email (HTML)
-	subject := "Subject: [MASTER] Atur Ulang Kata Sandi CRM\n"
-	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
+	// Body email HTML
 	body := fmt.Sprintf(`
 		<div style="font-family: sans-serif; max-width: 500px; border: 1px solid #eee; padding: 20px;">
 			<h2 style="color: #06B6D4;">Halo, Master!</h2>
@@ -444,13 +438,36 @@ func ForgotPassword(c echo.Context) error {
 			<p style="font-size: 10px; color: #aaa;">© 2026 CRM PT. Matur Nuwun Nusantara</p>
 		</div>`, resetLink)
 
-	msg := []byte(subject + mime + body)
-	auth := smtp.PlainAuth("", from, password, smtpHost)
-
-	// Kirim Email
-	err := smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{user.Email}, msg)
+	// Payload Resend API
+	payload, err := json.Marshal(map[string]interface{}{
+		"from":    "CRM Mantra <onboarding@resend.dev>", // ganti dengan domain verified kalau sudah punya
+		"to":      []string{user.Email},
+		"subject": "[MASTER] Atur Ulang Kata Sandi CRM",
+		"html":    body,
+	})
 	if err != nil {
-		fmt.Println("SMTP Error:", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat payload email."})
+	}
+
+	// Kirim via Resend API
+	httpReq, err := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer(payload))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat request email."})
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+os.Getenv("RESEND_API_KEY"))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		fmt.Println("Resend Error:", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengirim email reset."})
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Println("Resend API Error:", string(respBody))
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengirim email reset."})
 	}
 
