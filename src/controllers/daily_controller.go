@@ -322,6 +322,7 @@ func GetActivityPerluTindakan(c echo.Context) error {
 		Where("status != ?", models.StatusPending).
 		Where(
 			config.DB.Where("status = ?", models.StatusDitolak).
+				Or("status = ?", models.StatusPendingPegawai).
 				Or("target_selesai < ? AND status NOT IN ?", now, []string{
 					string(models.StatusDiterima),
 					string(models.StatusDitolak),
@@ -342,8 +343,7 @@ func GetActivityRiwayat(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
 
-	query := baseActivityQuery(pegawaiID)
-
+	query := baseActivityQuery(pegawaiID).Where("status IN ?", []string{"DITERIMA", "DITOLAK", "DIBATALKAN"})
 	return paginateActivity(c, query)
 }
 
@@ -476,7 +476,7 @@ func TambahKolaborator(c echo.Context) error {
 			Deskripsi:              req.Deskripsi,
 			WaktuMulai:             time.Now(),
 			TargetSelesai:          time.Now().Add(24 * time.Hour),
-			Status:                 models.StatusOnProgress,
+			Status:                 models.StatusPendingPegawai,
 			IsKonfirmasiKolaborasi: true,
 		}
 		if err := tx.Create(&childActivity).Error; err != nil {
@@ -956,17 +956,38 @@ func KirimChat(c echo.Context) error {
 
 	// Cek activity ada
 	var activity models.Activity
-	if err := config.DB.Where("id = ?", activityID).First(&activity).Error; err != nil {
+	if err := config.DB.Preload("Pegawai").Where("id = ?", activityID).First(&activity).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
-	// Validasi: hanya pemilik activity atau Master yang boleh chat
-	isMaster := role == string(models.RoleMaster)
-	isOwner := activity.PegawaiID == pegawaiID
-	if !isMaster && !isOwner {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya pemilik activity atau Master yang bisa mengirim pesan."})
+	// Ambil data pegawai pengirim
+	var pengirim models.Pegawai
+	if err := config.DB.Where("id = ?", pegawaiID).First(&pengirim).Error; err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Data pegawai tidak ditemukan."})
 	}
 
+	// === Validasi izin kirim chat ===
+	isMaster := role == string(models.RoleMaster)
+	isOwner := activity.PegawaiID == pegawaiID
+
+	// Supervisi dengan divisi sama dengan pembuat activity
+	isSupervisiSameDivisi := role == string(models.RoleSupervisi) &&
+		pengirim.Divisi == activity.Pegawai.Divisi
+
+	// Pembuat parent activity
+	isParentOwner := false
+	if activity.ParentID != nil {
+		var parentActivity models.Activity
+		if err := config.DB.Where("id = ?", *activity.ParentID).First(&parentActivity).Error; err == nil {
+			isParentOwner = parentActivity.PegawaiID == pegawaiID
+		}
+	}
+
+	if !isMaster && !isOwner && !isSupervisiSameDivisi && !isParentOwner {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Anda tidak memiliki akses untuk mengirim pesan di activity ini."})
+	}
+
+	// === Kirim chat ===
 	var chat models.ActivityChat
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		chat = models.ActivityChat{
@@ -980,35 +1001,11 @@ func KirimChat(c echo.Context) error {
 		}
 
 		// Notif ke lawan chat
-		var targetPegawaiID string
 		if isMaster {
-			targetPegawaiID = activity.PegawaiID
-		} else {
-			// Notif ke semua Master
-			var masters []models.User
-			if err := tx.Where("role = ?", models.RoleMaster).Find(&masters).Error; err != nil {
-				return err
-			}
-			for _, master := range masters {
-				notif := models.Notifikasi{
-					ID:         fmt.Sprintf("NTF-CHT-%s-%s-%d", chat.ID, master.PegawaiID, time.Now().UnixNano()),
-					PegawaiID:  master.PegawaiID,
-					ActivityID: &activityID,
-					Judul:      "Pesan baru",
-					Pesan:      fmt.Sprintf("Pesan baru dari activity %s", activityID),
-					IsRead:     false,
-				}
-				if err := tx.Create(&notif).Error; err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-
-		if targetPegawaiID != "" {
+			// Notif ke pemilik activity
 			notif := models.Notifikasi{
 				ID:         fmt.Sprintf("NTF-CHT-%s-%d", chat.ID, time.Now().UnixNano()),
-				PegawaiID:  targetPegawaiID,
+				PegawaiID:  activity.PegawaiID,
 				ActivityID: &activityID,
 				Judul:      "Pesan baru",
 				Pesan:      fmt.Sprintf("Pesan baru dari activity %s", activityID),
@@ -1017,6 +1014,24 @@ func KirimChat(c echo.Context) error {
 			return tx.Create(&notif).Error
 		}
 
+		// Notif ke semua Master
+		var masters []models.User
+		if err := tx.Where("role = ?", models.RoleMaster).Find(&masters).Error; err != nil {
+			return err
+		}
+		for _, master := range masters {
+			notif := models.Notifikasi{
+				ID:         fmt.Sprintf("NTF-CHT-%s-%s-%d", chat.ID, master.PegawaiID, time.Now().UnixNano()),
+				PegawaiID:  master.PegawaiID,
+				ActivityID: &activityID,
+				Judul:      "Pesan baru",
+				Pesan:      fmt.Sprintf("Pesan baru dari activity %s", activityID),
+				IsRead:     false,
+			}
+			if err := tx.Create(&notif).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 
@@ -1024,7 +1039,6 @@ func KirimChat(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
 	}
 
-	// Preload pegawai untuk response
 	config.DB.Preload("Pegawai").First(&chat, "id = ?", chat.ID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{

@@ -43,6 +43,7 @@ type KategoriActivity string
 const (
 	StatusOnProgress        StatusActivity = "ON_PROGRESS"
 	StatusPending           StatusActivity = "PENDING"
+	StatusPendingPegawai    StatusActivity = "PENDING_PEGAWAI"
 	StatusDiterima          StatusActivity = "DITERIMA"
 	StatusKonfirmasiSelesai StatusActivity = "KONFIRMASI_SELESAI"
 	StatusDitolak           StatusActivity = "DITOLAK"
