@@ -426,7 +426,7 @@ func ForgotPassword(c echo.Context) error {
 	smtpPort := "587"
 
 	// Link yang akan dikirim ke email
-	resetLink := "http://localhost:5173/reset-password?token=" + token
+	resetLink := "https://mantra-frontend-staging-3qwrey5gb-axels-projects-b729bff5.vercel.app/reset-password?token=" + token
 
 	// Draft Email (HTML)
 	subject := "Subject: [MASTER] Atur Ulang Kata Sandi CRM\n"
