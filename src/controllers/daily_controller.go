@@ -414,6 +414,8 @@ func GetDetailActivity(c echo.Context) error {
 		Preload("Chat.Pegawai").
 		Preload("Children").
 		Preload("Children.Pegawai").
+		Preload("Parent").
+		Preload("Parent.Pegawai").
 		Where("id = ?", id).
 		First(&activity).Error
 

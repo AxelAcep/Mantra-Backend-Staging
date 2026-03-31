@@ -342,6 +342,8 @@ func MasterGetActivityDetail(c echo.Context) error {
 		Preload("Reschedule").
 		Preload("Chat").
 		Preload("Chat.Pegawai").
+		Preload("Parent").
+		Preload("Parent.Pegawai").
 		First(&activity, "id = ?", id)
 
 	if result.Error != nil {
