@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"mantra/src/config"
@@ -160,10 +161,22 @@ func baseMasterActivityQuery() *gorm.DB {
 // ==========================================
 
 func MasterGetReschedulePending(c echo.Context) error {
-	query := config.DB.Model(&models.ActivityReschedule{}).
-		Where("status = ?", models.StatusReschedulePending)
+	search := c.QueryParam("search")
 
-	return paginateMasterReschedule(c, query, 5)
+	query := config.DB.Model(&models.ActivityReschedule{}).
+		Joins(`JOIN "Activity" ON "Activity"."id" = "ActivityReschedule"."activity_id"`).
+		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
+		Where(`"ActivityReschedule"."status" = ?`, models.StatusReschedulePending)
+
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			`"Pegawai"."nama" ILIKE ? OR "Activity"."judul" ILIKE ? OR "Activity"."perusahaan" ILIKE ?`,
+			like, like, like,
+		)
+	}
+
+	return paginateMasterReschedule(c, query, 10)
 }
 
 // ==========================================
@@ -173,12 +186,43 @@ func MasterGetReschedulePending(c echo.Context) error {
 // ==========================================
 
 func MasterGetActivitySelesai(c echo.Context) error {
+	search := c.QueryParam("search")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
+
 	query := baseMasterActivityQuery().
-		Where("status IN ?", []string{
+		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
+		Where(`"Activity"."status" IN ?`, []string{
 			string(models.StatusKonfirmasiSelesai),
 		})
 
-	return paginateMasterActivity(c, query, 5)
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			`"Pegawai"."nama" ILIKE ? OR "Activity"."judul" ILIKE ? OR "Activity"."perusahaan" ILIKE ? OR "Activity"."kategori"::text ILIKE ?`,
+			like, like, like, like,
+		)
+	}
+
+	orderClause := `"Activity"."created_at" DESC`
+	validSortDir := "DESC"
+	if strings.ToUpper(sortDir) == "ASC" {
+		validSortDir = "ASC"
+	}
+	switch strings.ToLower(sortBy) {
+	case "karyawan":
+		orderClause = `"Pegawai"."nama" ` + validSortDir
+	case "judul":
+		orderClause = `"Activity"."judul" ` + validSortDir
+	case "perusahaan":
+		orderClause = `"Activity"."perusahaan" ` + validSortDir
+	case "kategori":
+		orderClause = `"Activity"."kategori" ` + validSortDir
+	}
+
+	query = query.Order(orderClause)
+
+	return paginateMasterActivity(c, query, 10)
 }
 
 // ==========================================
@@ -189,11 +233,58 @@ func MasterGetActivitySelesai(c echo.Context) error {
 // ==========================================
 
 func MasterGetActivityAktif(c echo.Context) error {
+	search := c.QueryParam("search")
+	sortBy := c.QueryParam("sortBy")   // "karyawan" | "kategori" | "status"
+	sortDir := c.QueryParam("sortDir") // "asc" | "desc"
+
+	// Filter dropdown
+	filterKaryawan := c.QueryParam("karyawan") // pegawai_id
+	filterKategori := c.QueryParam("kategori") // e.g. "QUOTATION"
+	filterStatus := c.QueryParam("status")     // e.g. "ON_PROGRESS"
+
 	query := baseMasterActivityQuery().
-		Where("status NOT IN ?", []string{
+		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
+		Where(`"Activity"."status" NOT IN ?`, []string{
 			string(models.StatusDiterima),
 			string(models.StatusDibatalkan),
 		})
+
+	// Search: nama, judul, perusahaan, no referensi (terkait_po)
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			`"Pegawai"."nama" ILIKE ? OR "Activity"."judul" ILIKE ? OR "Activity"."perusahaan" ILIKE ? OR "Activity"."terkait_po" ILIKE ?`,
+			like, like, like, like,
+		)
+	}
+
+	// Filter
+	if filterKaryawan != "" {
+		query = query.Where(`"Activity"."pegawai_id" = ?`, filterKaryawan)
+	}
+	if filterKategori != "" {
+		query = query.Where(`"Activity"."kategori" = ?`, filterKategori)
+	}
+	if filterStatus != "" {
+		query = query.Where(`"Activity"."status" = ?`, filterStatus)
+	}
+
+	// Sort
+	orderClause := `"Activity"."created_at" DESC`
+	validSortDir := "DESC"
+	if strings.ToUpper(sortDir) == "ASC" {
+		validSortDir = "ASC"
+	}
+	switch strings.ToLower(sortBy) {
+	case "karyawan":
+		orderClause = `"Pegawai"."nama" ` + validSortDir
+	case "kategori":
+		orderClause = `"Activity"."kategori" ` + validSortDir
+	case "status":
+		orderClause = `"Activity"."status" ` + validSortDir
+	}
+
+	query = query.Order(orderClause)
 
 	return paginateMasterActivity(c, query, 10)
 }
@@ -205,8 +296,8 @@ func MasterGetActivityAktif(c echo.Context) error {
 // ==========================================
 
 func MasterGetActivitySemua(c echo.Context) error {
-	query := baseMasterActivityQuery()
-
+	query := baseMasterActivityQuery().
+		Where("status = ? OR status = ?", "DITERIMA", "DIBATALKAN")
 	return paginateMasterActivity(c, query, 10)
 }
 
@@ -472,37 +563,55 @@ func MasterGetDetailKPI(c echo.Context) error {
 }
 
 func MasterGetActivityRiwayat(c echo.Context) error {
-	page := queryInt(c, "page", 1)
-	limit := queryInt(c, "limit", 10)
 	search := c.QueryParam("search")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
+	filterKaryawan := c.QueryParam("karyawan")
+	filterKategori := c.QueryParam("kategori")
+	filterStatus := c.QueryParam("status")
 
-	offset := (page - 1) * limit
-
-	baseQuery := config.DB.Model(&models.Activity{}).Where("status IN ?", []string{"DITERIMA", "DITOLAK", "DIBATALKAN"})
+	query := baseMasterActivityQuery().
+		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
+		Where(`"Activity"."status" IN ?`, []string{ // ← IN, bukan NOT IN
+			string(models.StatusDiterima),
+			string(models.StatusDibatalkan),
+		})
 
 	if search != "" {
-		baseQuery = baseQuery.Joins("JOIN Pegawai ON Pegawai.id = Activity.pegawai_id").
-			Where("Pegawai.nama ILIKE ?", "%"+search+"%")
+		like := "%" + search + "%"
+		query = query.Where(
+			`"Pegawai"."nama" ILIKE ? OR "Activity"."judul" ILIKE ? OR "Activity"."perusahaan" ILIKE ? OR "Activity"."terkait_po" ILIKE ?`,
+			like, like, like, like,
+		)
 	}
 
-	var total int64
-	baseQuery.Count(&total)
+	if filterKaryawan != "" {
+		query = query.Where(`"Activity"."pegawai_id" = ?`, filterKaryawan)
+	}
+	if filterKategori != "" {
+		query = query.Where(`"Activity"."kategori" = ?`, filterKategori)
+	}
+	if filterStatus != "" {
+		query = query.Where(`"Activity"."status" = ?`, filterStatus)
+	}
 
-	var activities []models.Activity
-	baseQuery.Preload("Pegawai").
-		Order("updated_at DESC").
-		Offset(offset).
-		Limit(limit).
-		Find(&activities)
+	orderClause := `"Activity"."created_at" DESC`
+	validSortDir := "DESC"
+	if strings.ToUpper(sortDir) == "ASC" {
+		validSortDir = "ASC"
+	}
+	switch strings.ToLower(sortBy) {
+	case "karyawan":
+		orderClause = `"Pegawai"."nama" ` + validSortDir
+	case "kategori":
+		orderClause = `"Activity"."kategori" ` + validSortDir
+	case "status":
+		orderClause = `"Activity"."status" ` + validSortDir
+	}
 
-	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+	query = query.Order(orderClause)
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"data":       activities,
-		"total":      total,
-		"page":       page,
-		"totalPages": totalPages,
-	})
+	return paginateMasterActivity(c, query, 10)
 }
 
 func GetKPIOverview(c echo.Context) error {

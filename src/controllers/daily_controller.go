@@ -343,7 +343,7 @@ func GetActivityRiwayat(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
 
-	query := baseActivityQuery(pegawaiID).Where("status IN ?", []string{"DITERIMA", "DITOLAK", "DIBATALKAN"})
+	query := baseActivityQuery(pegawaiID).Where("status IN ?", []string{"DITERIMA", "DIBATALKAN"})
 	return paginateActivity(c, query)
 }
 
