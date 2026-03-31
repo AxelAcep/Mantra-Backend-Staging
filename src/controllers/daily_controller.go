@@ -839,9 +839,11 @@ func KonfirmasiSelesai(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Format request tidak valid."})
 	}
+
 	if req.Status != string(models.StatusDiterima) && req.Status != string(models.StatusDitolak) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status harus DITERIMA atau ON_PROGRESS."})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status harus DITERIMA atau DITOLAK."})
 	}
+
 	if req.Status == string(models.StatusDitolak) && req.Alasan == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Alasan penolakan wajib diisi."})
 	}
@@ -853,31 +855,32 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		activity.Status = models.StatusActivity(req.Status)
-		if err := tx.Save(&activity).Error; err != nil {
-			return err
-		}
 
 		pesanNotif := "Activity kamu telah diterima dan dinyatakan selesai."
 		judulNotif := "Activity Diterima"
+
 		if req.Status == string(models.StatusDitolak) {
 			pesanNotif = fmt.Sprintf("Pengajuan selesai ditolak. Alasan: %s", req.Alasan)
 			judulNotif = "Pengajuan Selesai Ditolak"
+			activity.AlasanPenolakan = &req.Alasan
 
-			tx.Model(&models.ActivityKolaborator{}).
+			if err := tx.Model(&models.ActivityKolaborator{}).
 				Where("child_activity_id = ?", activityID).
-				Update("status", models.StatusDitolak)
+				Update("status", models.StatusDitolak).Error; err != nil {
+				return err
+			}
 		}
 
 		if req.Status == string(models.StatusDiterima) {
-			activity.Status = models.StatusDiterima
-			if err := tx.Save(&activity).Error; err != nil {
+			if err := tx.Model(&models.ActivityKolaborator{}).
+				Where("child_activity_id = ?", activityID).
+				Update("status", models.StatusDiterima).Error; err != nil {
 				return err
 			}
+		}
 
-			// Update status di ActivityKolaborator
-			tx.Model(&models.ActivityKolaborator{}).
-				Where("child_activity_id = ?", activityID).
-				Update("status", models.StatusDiterima)
+		if err := tx.Save(&activity).Error; err != nil {
+			return err
 		}
 
 		notif := models.Notifikasi{
@@ -895,9 +898,7 @@ func KonfirmasiSelesai(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "Konfirmasi berhasil.",
-	})
+	return c.JSON(http.StatusOK, map[string]string{"message": "Konfirmasi berhasil."})
 }
 
 // ==========================================

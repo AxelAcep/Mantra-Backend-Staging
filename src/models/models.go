@@ -126,6 +126,7 @@ type Activity struct {
 	Children               []Activity            `gorm:"foreignKey:ParentID" json:"children,omitempty"`
 	CreatedAt              time.Time             `gorm:"index" json:"createdAt"` // + index: sort by created
 	UpdatedAt              time.Time             `json:"updatedAt"`
+	AlasanPenolakan        *string               `gorm:"type:text" json:"alasanPenolakan,omitempty"`
 }
 
 // Index komposit untuk query yang paling sering: activity by pegawai + status (perlu tindakan, on progress, dll)

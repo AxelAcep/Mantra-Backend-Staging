@@ -17,6 +17,11 @@ import (
 // HELPER: Paginate Activity (Master)
 // ==========================================
 
+type ActivityWithOverdue struct {
+	models.Activity
+	IsOverdue bool `json:"isOverdue"`
+}
+
 func paginateMasterActivity(c echo.Context, query *gorm.DB, pageSize int) error {
 	pageStr := c.QueryParam("page")
 	page, err := strconv.Atoi(pageStr)
@@ -35,15 +40,26 @@ func paginateMasterActivity(c echo.Context, query *gorm.DB, pageSize int) error 
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Find(&activities)
-
 	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": result.Error.Error()})
 	}
 
-	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	now := time.Now()
+	enriched := make([]ActivityWithOverdue, len(activities))
+	for i, a := range activities {
+		isOverdue := a.Status != models.StatusDiterima && now.After(a.TargetSelesai)
+		if isOverdue {
+			a.Status = "OVERDUE"
+		}
+		enriched[i] = ActivityWithOverdue{
+			Activity:  a,
+			IsOverdue: isOverdue,
+		}
+	}
 
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"data":       activities,
+		"data":       enriched,
 		"page":       page,
 		"pageSize":   pageSize,
 		"total":      total,
