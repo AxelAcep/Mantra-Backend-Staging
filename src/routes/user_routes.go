@@ -12,6 +12,7 @@ func UserRoutes(e *echo.Echo) {
 
 	g.POST("/register", controllers.Register, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.POST("/login", controllers.Login)
+	g.GET("/me", controllers.GetMe, middleware.VerifyToken)
 
 	g.GET("", controllers.GetAllUsers, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/:id", controllers.GetOneUser, middleware.VerifyToken, middleware.AuthorizeRole(4))

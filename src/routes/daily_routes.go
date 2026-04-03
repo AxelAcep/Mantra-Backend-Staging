@@ -24,6 +24,7 @@ func ActivityRoutes(e *echo.Echo) {
 	g.PATCH("/reschedule/:rescheduleId/konfirmasi", controllers.KonfirmasiReschedule, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.POST("/:id/selesai", controllers.PengajuanSelesai, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/konfirmasi-selesai", controllers.KonfirmasiSelesai, middleware.VerifyToken, middleware.AuthorizeRole(1))
+	g.PATCH("/:id/kpi", controllers.UpdateActivityKPI, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/:id/chat", controllers.GetChat, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("/:id/chat", controllers.KirimChat, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/chat/read", controllers.ReadChat, middleware.VerifyToken, middleware.AuthorizeRole(4))

@@ -270,6 +270,42 @@ func GetOneUser(c echo.Context) error {
 }
 
 // ==========================================
+// GET ME (PROFILE)
+// ==========================================
+
+func GetMe(c echo.Context) error {
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	id, ok := claims["id"].(string)
+	if !ok || id == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	var user models.User
+	if err := config.DB.Preload("Pegawai").Where("id = ?", id).First(&user).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "User tidak ditemukan."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Data profil berhasil diambil.",
+		"user": map[string]interface{}{
+			"id":       user.ID,
+			"email":    user.Email,
+			"role":     user.Role,
+			"isActive": true,
+			"pegawai": map[string]interface{}{
+				"id":     user.Pegawai.ID,
+				"nama":   user.Pegawai.Nama,
+				"divisi": user.Pegawai.Divisi,
+			},
+		},
+	})
+}
+
+// ==========================================
 // EDIT USER
 // ==========================================
 
