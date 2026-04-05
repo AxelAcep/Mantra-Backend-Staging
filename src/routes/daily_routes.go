@@ -19,6 +19,8 @@ func ActivityRoutes(e *echo.Echo) {
 	g.GET("/riwayat", controllers.GetActivityRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/count", controllers.GetActivityCount, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/:id", controllers.GetDetailActivity, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	// update activity non-tanggal
+	g.PATCH("/:id", controllers.UpdateActivity, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("/:id/kolaborator", controllers.TambahKolaborator, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("/:id/reschedule", controllers.PengajuanReschedule, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/reschedule/:rescheduleId/konfirmasi", controllers.KonfirmasiReschedule, middleware.VerifyToken, middleware.AuthorizeRole(1))

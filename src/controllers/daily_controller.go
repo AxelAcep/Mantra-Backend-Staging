@@ -12,6 +12,7 @@ import (
 	"mantra/src/models"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
@@ -830,8 +831,9 @@ func PengajuanSelesai(c echo.Context) error {
 // ==========================================
 
 type KonfirmasiSelesaiRequest struct {
-	Status string `json:"status"`
-	Alasan string `json:"alasan"`
+	Status   string          `json:"status"`
+	Alasan   string          `json:"alasan"`
+	NilaiKPI models.NilaiKPI `json:"nilaiKPI"`
 }
 
 func KonfirmasiSelesai(c echo.Context) error {
@@ -848,6 +850,10 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 	if req.Status == string(models.StatusDitolak) && req.Alasan == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Alasan penolakan wajib diisi."})
+	}
+
+	if req.Status == string(models.StatusDiterima) && req.NilaiKPI == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Nilai KPI wajib diisi saat menyetujui penyelesaian."})
 	}
 
 	var activity models.Activity
@@ -874,9 +880,42 @@ func KonfirmasiSelesai(c echo.Context) error {
 		}
 
 		if req.Status == string(models.StatusDiterima) {
+			activity.NilaiKPI = &req.NilaiKPI
+
 			if err := tx.Model(&models.ActivityKolaborator{}).
 				Where("child_activity_id = ?", activityID).
 				Update("status", models.StatusDiterima).Error; err != nil {
+				return err
+			}
+
+			// Handle KPI Counters — Logic mirrored from UpdateActivityKPI
+			minggu, bulan, tahun := getKPIPeriod(activity.TargetSelesai)
+			var kpi models.KPIPegawai
+			if err := tx.Where("pegawai_id = ? AND bulan = ? AND tahun = ? AND minggu = ?",
+				activity.PegawaiID, bulan, tahun, minggu).First(&kpi).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					kpi = models.KPIPegawai{
+						ID:        uuid.NewString(),
+						PegawaiID: activity.PegawaiID,
+						Bulan:     bulan,
+						Tahun:     tahun,
+						Minggu:    minggu,
+					}
+					if err := tx.Create(&kpi).Error; err != nil {
+						return err
+					}
+				} else {
+					return err
+				}
+			}
+
+			fieldMap := map[models.NilaiKPI]string{
+				models.NilaiKPIBaik:  "baik",
+				models.NilaiKPICukup: "cukup",
+				models.NilaiKPIBuruk: "buruk",
+			}
+			newField := fieldMap[req.NilaiKPI]
+			if err := tx.Model(&kpi).Update(newField, gorm.Expr(newField+" + 1")).Error; err != nil {
 				return err
 			}
 		}
@@ -1257,5 +1296,58 @@ func KonfirmasiKolaborasi(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Konfirmasi kolaborasi berhasil.",
+	})
+}
+
+// ==========================================
+// UPDATE ACTIVITY
+// ==========================================
+
+type UpdateActivityRequest struct {
+	TerkaitPO  *string `json:"terkaitPO"`
+	Perusahaan *string `json:"perusahaan"`
+	Kategori   string  `json:"kategori"`
+	Judul      string  `json:"judul"`
+	Deskripsi  string  `json:"deskripsi"`
+}
+
+func UpdateActivity(c echo.Context) error {
+	activityID := c.Param("id")
+
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+
+	var req UpdateActivityRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Format request tidak valid."})
+	}
+
+	if req.Kategori == "" || req.Judul == "" || req.Deskripsi == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Kategori, judul, dan deskripsi wajib diisi."})
+	}
+
+	var activity models.Activity
+	if err := config.DB.Where("id = ? AND pegawai_id = ?", activityID, pegawaiID).First(&activity).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
+	}
+
+	// Update fields
+	activity.TerkaitPO = req.TerkaitPO
+	activity.Perusahaan = req.Perusahaan
+	activity.Kategori = models.KategoriActivity(req.Kategori)
+	activity.Judul = req.Judul
+	activity.Deskripsi = req.Deskripsi
+
+	if err := config.DB.Save(&activity).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Activity berhasil diperbarui.",
+		"data":    activity,
 	})
 }
