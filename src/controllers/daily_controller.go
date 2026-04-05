@@ -1320,6 +1320,7 @@ func UpdateActivity(c echo.Context) error {
 	}
 	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
 	pegawaiID, _ := pegawaiMap["id"].(string)
+	role, _ := claims["role"].(string)
 
 	var req UpdateActivityRequest
 	if err := c.Bind(&req); err != nil {
@@ -1331,7 +1332,14 @@ func UpdateActivity(c echo.Context) error {
 	}
 
 	var activity models.Activity
-	if err := config.DB.Where("id = ? AND pegawai_id = ?", activityID, pegawaiID).First(&activity).Error; err != nil {
+	query := config.DB.Where("id = ?", activityID)
+
+	// Jika bukan Master, hanya boleh edit activity milik sendiri
+	if role != string(models.RoleMaster) {
+		query = query.Where("pegawai_id = ?", pegawaiID)
+	}
+
+	if err := query.First(&activity).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
