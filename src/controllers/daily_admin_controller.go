@@ -48,7 +48,7 @@ func paginateMasterActivity(c echo.Context, query *gorm.DB, pageSize int) error 
 	now := time.Now()
 	enriched := make([]ActivityWithOverdue, len(activities))
 	for i, a := range activities {
-		isOverdue := (a.Status == models.StatusOnProgress || a.Status == models.StatusPendingPegawai) && now.After(a.TargetSelesai)
+		isOverdue := (a.Status == models.StatusOnProgress) && now.After(a.TargetSelesai)
 		if isOverdue {
 			a.Status = "OVERDUE"
 		}
@@ -266,7 +266,11 @@ func MasterGetActivityAktif(c echo.Context) error {
 		query = query.Where(`"Activity"."kategori" = ?`, filterKategori)
 	}
 	if filterStatus != "" {
-		query = query.Where(`"Activity"."status" = ?`, filterStatus)
+		if filterStatus == "OVERDUE" {
+			query = query.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" < ?`, models.StatusOnProgress, time.Now())
+		} else {
+			query = query.Where(`"Activity"."status" = ?`, filterStatus)
+		}
 	}
 
 	// Sort
@@ -317,7 +321,7 @@ func MasterGetStats(c echo.Context) error {
 		Count(&pengajuanReschedule)
 
 	config.DB.Model(&models.Activity{}).
-		Where("status IN ? AND target_selesai < ?", []string{string(models.StatusOnProgress), string(models.StatusPendingPegawai)}, time.Now()).
+		Where("status = ? AND target_selesai < ?", models.StatusOnProgress, time.Now()).
 		Count(&overdue)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -350,7 +354,7 @@ func MasterGetActivityDetail(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
-	isOverdue := (activity.Status == models.StatusOnProgress || activity.Status == models.StatusPendingPegawai) &&
+	isOverdue := (activity.Status == models.StatusOnProgress) &&
 		activity.TargetSelesai.Before(time.Now())
 
 	return c.JSON(http.StatusOK, map[string]interface{}{

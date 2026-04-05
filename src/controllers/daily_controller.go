@@ -323,11 +323,7 @@ func GetActivityPerluTindakan(c echo.Context) error {
 		Where(
 			config.DB.Where("status = ?", models.StatusDitolak).
 				Or("status = ?", models.StatusPendingPegawai).
-				Or("target_selesai < ? AND status NOT IN ?", now, []string{
-					string(models.StatusDiterima),
-					string(models.StatusDitolak),
-					string(models.StatusPending), // Pastikan juga tidak masuk dalam logika deadline
-				}),
+				Or("target_selesai < ? AND status = ?", now, models.StatusOnProgress),
 		)
 
 	return paginateActivity(c, query)
@@ -383,7 +379,7 @@ func GetActivityCount(c echo.Context) error {
 	config.DB.Model(&models.Activity{}).
 		Where("pegawai_id = ? AND target_selesai < ? AND status IN ?",
 			pegawaiID, now,
-			[]string{string(models.StatusOnProgress), string(models.StatusPendingPegawai)},
+			models.StatusOnProgress,
 		).Count(&overdue)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -427,7 +423,7 @@ func GetDetailActivity(c echo.Context) error {
 	}
 
 	// Cek apakah overdue
-	isOverdue := (activity.Status == models.StatusOnProgress || activity.Status == models.StatusPendingPegawai) &&
+	isOverdue := (activity.Status == models.StatusOnProgress) &&
 		time.Now().After(activity.TargetSelesai)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -569,7 +565,7 @@ func PengajuanReschedule(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mohon pilih target selesai baru yang melewati waktu saat ini."})
 	}
 
-	isOverdue := (activity.Status == models.StatusOnProgress || activity.Status == models.StatusPendingPegawai) &&
+	isOverdue := (activity.Status == models.StatusOnProgress) &&
 		time.Now().After(activity.TargetSelesai)
 
 	var reschedule models.ActivityReschedule
