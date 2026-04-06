@@ -62,6 +62,8 @@ func createCompositeIndexes(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_pegawai_status ON "Activity" ("pegawai_id", "status")`,
 		`CREATE INDEX IF NOT EXISTS idx_activity_overdue ON "Activity" ("status", "target_selesai")`,
 		`CREATE INDEX IF NOT EXISTS idx_notifikasi_pegawai_read ON "Notifikasi" ("pegawai_id", "is_read")`,
+		`DROP INDEX IF EXISTS idx_kpi_unique`,
+		`CREATE UNIQUE INDEX idx_kpi_unique ON "KPIPegawai" ("pegawai_id", "bulan", "tahun", "minggu")`,
 	}
 
 	for _, sql := range indexes {

@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Helper to get Week/Month/Year from a time object
@@ -49,63 +51,52 @@ func UpdateActivityKPI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Hanya activity yang sudah Selesai (DITERIMA) yang dapat diberikan nilai KPI."})
 	}
 
-	// Use TargetSelesai as the period reference
-	minggu, bulan, tahun := getKPIPeriod(activity.TargetSelesai)
-
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Get current KPIPegawai record for this period
-		var kpi models.KPIPegawai
-		err := tx.
-			Where("pegawai_id = ? AND bulan = ? AND tahun = ? AND minggu = ?",
-				activity.PegawaiID, bulan, tahun, minggu).
-			First(&kpi).Error
+		// Atomic Upsert counter logic
+		minggu, bulan, tahun := getKPIPeriod(activity.TargetSelesai)
 
-		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				// Create new record for this period if not exists
-				kpi = models.KPIPegawai{
-					ID:        uuid.NewString(),
-					PegawaiID: activity.PegawaiID,
-					Bulan:     bulan,
-					Tahun:     tahun,
-					Minggu:    minggu,
-				}
-				if err := tx.Create(&kpi).Error; err != nil {
-					return err
-				}
-			} else {
-				return err
-			}
-		}
-
-		// 2. Adjust counters
 		fieldMap := map[models.NilaiKPI]string{
 			models.NilaiKPIBaik:  "baik",
 			models.NilaiKPICukup: "cukup",
 			models.NilaiKPIBuruk: "buruk",
 		}
 
-		// If there was an old rating, decrement its counter
+		kpi := models.KPIPegawai{
+			ID:        uuid.NewString(),
+			PegawaiID: activity.PegawaiID,
+			Bulan:     bulan,
+			Tahun:     tahun,
+			Minggu:    minggu,
+		}
+
+		// Adjust old rating if exists
 		if activity.NilaiKPI != nil {
 			oldField := fieldMap[*activity.NilaiKPI]
-			if err := tx.Model(&kpi).Update(oldField, gorm.Expr(oldField+" - 1")).Error; err != nil {
+			if err := tx.Model(&models.KPIPegawai{}).
+				Where("pegawai_id = ? AND bulan = ? AND tahun = ? AND minggu = ?",
+					activity.PegawaiID, bulan, tahun, minggu).
+				Update(oldField, gorm.Expr(fmt.Sprintf("\"KPIPegawai\".\"%s\" - 1", oldField))).Error; err != nil {
 				return err
 			}
 		}
 
-		// Increment new rating counter
+		// Atomic Create or Update counter
 		newField := fieldMap[body.Nilai]
-		if err := tx.Model(&kpi).Update(newField, gorm.Expr(newField+" + 1")).Error; err != nil {
+		err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "pegawai_id"}, {Name: "bulan"}, {Name: "tahun"}, {Name: "minggu"}},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				newField:     gorm.Expr(fmt.Sprintf("\"KPIPegawai\".\"%s\" + 1", newField)),
+				"updated_at": time.Now(),
+			}),
+		}).Create(&kpi).Error
+
+		if err != nil {
 			return err
 		}
 
-		// 3. Update Activity
+		// Update Activity
 		activity.NilaiKPI = &body.Nilai
-		if err := tx.Save(&activity).Error; err != nil {
-			return err
-		}
-
-		return nil
+		return tx.Save(&activity).Error
 	})
 
 	if err != nil {
@@ -113,7 +104,7 @@ func UpdateActivityKPI(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message":   "KPI berhasil diperbarui.",
+		"message":    "KPI berhasil diperbarui.",
 		"activityId": activity.ID,
 		"nilaiKPI":   activity.NilaiKPI,
 	})

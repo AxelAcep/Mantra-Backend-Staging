@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ==========================================
@@ -378,7 +379,7 @@ func GetActivityCount(c echo.Context) error {
 		Count(&approval)
 
 	config.DB.Model(&models.Activity{}).
-		Where("pegawai_id = ? AND target_selesai < ? AND status IN ?",
+		Where("pegawai_id = ? AND target_selesai < ? AND status = ?",
 			pegawaiID, now,
 			models.StatusOnProgress,
 		).Count(&overdue)
@@ -888,35 +889,38 @@ func KonfirmasiSelesai(c echo.Context) error {
 				return err
 			}
 
-			// Handle KPI Counters — Logic mirrored from UpdateActivityKPI
+			// Handle KPI Counters — Atomic Upsert
 			minggu, bulan, tahun := getKPIPeriod(activity.TargetSelesai)
-			var kpi models.KPIPegawai
-			if err := tx.Where("pegawai_id = ? AND bulan = ? AND tahun = ? AND minggu = ?",
-				activity.PegawaiID, bulan, tahun, minggu).First(&kpi).Error; err != nil {
-				if err == gorm.ErrRecordNotFound {
-					kpi = models.KPIPegawai{
-						ID:        uuid.NewString(),
-						PegawaiID: activity.PegawaiID,
-						Bulan:     bulan,
-						Tahun:     tahun,
-						Minggu:    minggu,
-					}
-					if err := tx.Create(&kpi).Error; err != nil {
-						return err
-					}
-				} else {
-					return err
-				}
-			}
-
+			
 			fieldMap := map[models.NilaiKPI]string{
 				models.NilaiKPIBaik:  "baik",
 				models.NilaiKPICukup: "cukup",
 				models.NilaiKPIBuruk: "buruk",
 			}
 			newField := fieldMap[req.NilaiKPI]
-			if err := tx.Model(&kpi).Update(newField, gorm.Expr(newField+" + 1")).Error; err != nil {
-				return err
+			if newField == "" {
+				return fmt.Errorf("nilai KPI tidak valid")
+			}
+
+			kpi := models.KPIPegawai{
+				ID:        uuid.NewString(),
+				PegawaiID: activity.PegawaiID,
+				Bulan:     bulan,
+				Tahun:     tahun,
+				Minggu:    minggu,
+			}
+
+			// Atomic Create or Update counter
+			err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "pegawai_id"}, {Name: "bulan"}, {Name: "tahun"}, {Name: "minggu"}},
+				DoUpdates: clause.Assignments(map[string]interface{}{
+					newField: gorm.Expr(fmt.Sprintf("\"KPIPegawai\".\"%s\" + 1", newField)),
+					"updated_at": time.Now(),
+				}),
+			}).Create(&kpi).Error
+
+			if err != nil {
+				return fmt.Errorf("gagal update KPI: %v", err)
 			}
 		}
 
