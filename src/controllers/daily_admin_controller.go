@@ -218,6 +218,10 @@ func MasterGetActivitySelesai(c echo.Context) error {
 		orderClause = `"Activity"."perusahaan" ` + validSortDir
 	case "kategori":
 		orderClause = `"Activity"."kategori" ` + validSortDir
+	case "targetselesai":
+		orderClause = `"Activity"."target_selesai" ` + validSortDir
+	case "waktusubmit":
+		orderClause = `"Activity"."waktu_submit" ` + validSortDir
 	}
 
 	query = query.Order(orderClause)
@@ -286,6 +290,10 @@ func MasterGetActivityAktif(c echo.Context) error {
 		orderClause = `"Activity"."kategori" ` + validSortDir
 	case "status":
 		orderClause = `"Activity"."status" ` + validSortDir
+	case "targetselesai":
+		orderClause = `"Activity"."target_selesai" ` + validSortDir
+	case "waktusubmit":
+		orderClause = `"Activity"."waktu_submit" ` + validSortDir
 	}
 
 	query = query.Order(orderClause)
@@ -363,12 +371,14 @@ func MasterGetActivityDetail(c echo.Context) error {
 	})
 }
 
-// GET /master/karyawan?page=1&limit=10&search=&mode=tahun&bulan=3&tahun=2026
+// GET /master/karyawan?page=1&limit=10&search=&mode=tahun&bulan=3&tahun=2026&sortBy=nama&sortDir=asc
 func MasterGetKaryawan(c echo.Context) error {
 	page := queryInt(c, "page", 1)
 	limit := queryInt(c, "limit", 10)
 	search := c.QueryParam("search")
 	mode := c.QueryParam("mode") // "bulan" | "tahun"
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
 
 	bulan, tahun := currentBulanTahun()
 	bulan = queryInt(c, "bulan", bulan)
@@ -380,32 +390,63 @@ func MasterGetKaryawan(c echo.Context) error {
 
 	offset := (page - 1) * limit
 
-	// ── 1. Count + paginate Pegawai ───────────────────────────────────────────
-	baseQuery := config.DB.Model(&models.Pegawai{}).Where("deleted_at IS NULL")
+	// ── 1. Build Query with Calculated Counts ─────────────────────────────────
+	// Kita hitung aktivitasBerjalan dan totalAktivitas di SQL agar bisa di-sort
+	query := config.DB.Table(`"Pegawai" p`).
+		Select(`p.id, p.nama, p.divisi,
+            (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id AND a.status = 'ON_PROGRESS') as berjalan_count,
+            (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id) as total_count`).
+		Where("p.deleted_at IS NULL")
+
 	if search != "" {
-		baseQuery = baseQuery.Where("nama ILIKE ?", "%"+search+"%")
+		query = query.Where("p.nama ILIKE ?", "%"+search+"%")
 	}
 
+	// ── 2. Handle Sorting ─────────────────────────────────────────────────────
+	orderClause := "p.nama ASC"
+	validSortDir := "ASC"
+	if strings.ToUpper(sortDir) == "DESC" {
+		validSortDir = "DESC"
+	}
+
+	switch strings.ToLower(sortBy) {
+	case "nama":
+		orderClause = "p.nama " + validSortDir
+	case "aktivitasberjalan":
+		orderClause = "berjalan_count " + validSortDir
+	case "totalaktivitas":
+		orderClause = "total_count " + validSortDir
+	}
+
+	// ── 3. Count Total ────────────────────────────────────────────────────────
 	var total int64
-	baseQuery.Count(&total)
+	query.Count(&total)
 
-	var pegawaiList []models.Pegawai
-	baseQuery.Offset(offset).Limit(limit).Order("nama ASC").Find(&pegawaiList)
+	// ── 4. Fetch Paginated ────────────────────────────────────────────────────
+	type RawRow struct {
+		ID            string
+		Nama          string
+		Divisi        string
+		BerjalanCount int64
+		TotalCount    int64
+	}
 
-	if len(pegawaiList) == 0 {
+	var rawRows []RawRow
+	query.Offset(offset).Limit(limit).Order(orderClause).Scan(&rawRows)
+
+	if len(rawRows) == 0 {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"data": []interface{}{}, "total": total,
 			"page": page, "totalPages": 0,
 		})
 	}
 
-	// ── 2. Extract IDs ────────────────────────────────────────────────────────
-	ids := make([]string, len(pegawaiList))
-	for i, p := range pegawaiList {
-		ids[i] = p.ID
+	// ── 5. Batch KPI query (KPI tetap dihitung di Go karena tergantung bulan/tahun) ──
+	ids := make([]string, len(rawRows))
+	for i, r := range rawRows {
+		ids[i] = r.ID
 	}
 
-	// ── 3. Batch KPI query ────────────────────────────────────────────────────
 	type KPIRow struct {
 		PegawaiID string
 		Baik      int
@@ -432,38 +473,7 @@ func MasterGetKaryawan(c echo.Context) error {
 		kpiMap[k.PegawaiID] = k
 	}
 
-	// ── 4. Batch aktivitas berjalan ───────────────────────────────────────────
-	type ActivityCount struct {
-		PegawaiID string
-		Count     int64
-	}
-
-	var berjalanCounts []ActivityCount
-	config.DB.Model(&models.Activity{}).
-		Select("pegawai_id, COUNT(*) AS count").
-		Where("pegawai_id IN ? AND status = ?", ids, models.StatusOnProgress).
-		Group("pegawai_id").
-		Scan(&berjalanCounts)
-
-	berjalanMap := map[string]int64{}
-	for _, b := range berjalanCounts {
-		berjalanMap[b.PegawaiID] = b.Count
-	}
-
-	// ── 5. Batch total aktivitas ──────────────────────────────────────────────
-	var totalCounts []ActivityCount
-	config.DB.Model(&models.Activity{}).
-		Select("pegawai_id, COUNT(*) AS count").
-		Where("pegawai_id IN ?", ids).
-		Group("pegawai_id").
-		Scan(&totalCounts)
-
-	totalMap := map[string]int64{}
-	for _, t := range totalCounts {
-		totalMap[t.PegawaiID] = t.Count
-	}
-
-	// ── 6. Build result ───────────────────────────────────────────────────────
+	// ── 6. Build final result ─────────────────────────────────────────────────
 	type KaryawanRow struct {
 		ID                string `json:"id"`
 		Nama              string `json:"nama"`
@@ -475,18 +485,18 @@ func MasterGetKaryawan(c echo.Context) error {
 		TotalAktivitas    int64  `json:"totalAktivitas"`
 	}
 
-	results := make([]KaryawanRow, len(pegawaiList))
-	for i, p := range pegawaiList {
-		kpi := kpiMap[p.ID]
+	results := make([]KaryawanRow, len(rawRows))
+	for i, r := range rawRows {
+		kpi := kpiMap[r.ID]
 		results[i] = KaryawanRow{
-			ID:                p.ID,
-			Nama:              p.Nama,
-			Divisi:            string(p.Divisi),
+			ID:                r.ID,
+			Nama:              r.Nama,
+			Divisi:            r.Divisi,
 			Baik:              kpi.Baik,
 			Cukup:             kpi.Cukup,
 			Buruk:             kpi.Buruk,
-			AktivitasBerjalan: berjalanMap[p.ID],
-			TotalAktivitas:    totalMap[p.ID],
+			AktivitasBerjalan: r.BerjalanCount,
+			TotalAktivitas:    r.TotalCount,
 		}
 	}
 
@@ -613,6 +623,10 @@ func MasterGetActivityRiwayat(c echo.Context) error {
 		orderClause = `"Activity"."kategori" ` + validSortDir
 	case "status":
 		orderClause = `"Activity"."status" ` + validSortDir
+	case "targetselesai":
+		orderClause = `"Activity"."target_selesai" ` + validSortDir
+	case "waktusubmit":
+		orderClause = `"Activity"."waktu_submit" ` + validSortDir
 	}
 
 	query = query.Order(orderClause)
