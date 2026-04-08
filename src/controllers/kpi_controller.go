@@ -159,9 +159,19 @@ func GetAllKPIBulan(c echo.Context) error {
 	tahun = queryInt(c, "tahun", tahun)
 
 	var results []KPIResponse
-	kpiBaseQuery().
+	config.DB.Table(`"KPIPegawai"`).
+		Select(`
+            "KPIPegawai".pegawai_id,
+            "Pegawai".nama,
+            "Pegawai".divisi,
+            SUM("KPIPegawai".baik)  AS baik,
+            SUM("KPIPegawai".cukup) AS cukup,
+            SUM("KPIPegawai".buruk) AS buruk
+        `).
+		Joins(`JOIN "Pegawai" ON "Pegawai".id = "KPIPegawai".pegawai_id`).
 		Where(`"KPIPegawai".bulan = ? AND "KPIPegawai".tahun = ?`, bulan, tahun).
-		Order(`"KPIPegawai".baik DESC`).
+		Group(`"KPIPegawai".pegawai_id, "Pegawai".nama, "Pegawai".divisi`).
+		Order("baik DESC").
 		Scan(&results)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
