@@ -686,14 +686,24 @@ func GetKPIOverview(c echo.Context) error {
 		Scan(&weeklyTrends)
 
 	// ── 4. Riwayat Aktivitas ────────────────────────────────────────────────
+	tab := c.QueryParam("tab")
+	if tab == "" {
+		tab = "aktivitas"
+	}
+
+	activityQuery := config.DB.Model(&models.Activity{}).Where("pegawai_id = ?", pegawaiID)
+
+	if tab == "riwayat" {
+		activityQuery = activityQuery.Where("status = ?", models.StatusDiterima)
+	} else {
+		activityQuery = activityQuery.Where("status != ?", models.StatusDiterima)
+	}
+
 	var total int64
-	config.DB.Model(&models.Activity{}).
-		Where("pegawai_id = ?", pegawaiID).
-		Count(&total)
+	activityQuery.Count(&total)
 
 	var activities []models.Activity
-	config.DB.Preload("Pegawai").
-		Where("pegawai_id = ?", pegawaiID).
+	activityQuery.Preload("Pegawai").
 		Order("updated_at DESC").
 		Offset(offset).
 		Limit(limit).

@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // ==========================================
 // ENUMS (tidak diubah)
@@ -131,8 +135,8 @@ type Activity struct {
 }
 
 // Index komposit untuk query yang paling sering: activity by pegawai + status (perlu tindakan, on progress, dll)
-func (Activity) TableName() string                   { return "Activity" }
-func (a *Activity) BeforeCreate(_ interface{}) error { return nil } // placeholder jika perlu hook nanti
+func (Activity) TableName() string                 { return "Activity" }
+func (a *Activity) BeforeCreate(tx *gorm.DB) error { return nil } // placeholder jika perlu hook nanti
 
 type ActivityKolaborator struct {
 	ID              string         `gorm:"primaryKey" json:"id"`
