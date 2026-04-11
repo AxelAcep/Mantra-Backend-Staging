@@ -685,7 +685,7 @@ func GetKPIOverview(c echo.Context) error {
 		Order("minggu ASC").
 		Scan(&weeklyTrends)
 
-	// ── 4. Riwayat Aktivitas ────────────────────────────────────────────────
+	// ── 4. Riwayat Aktivitasssssss ────────────────────────────────────────────────
 	tab := c.QueryParam("tab")
 	if tab == "" {
 		tab = "aktivitas"
