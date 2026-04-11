@@ -26,7 +26,7 @@ func queryInt(c echo.Context, key string, fallback int) int {
 	return val
 }
 
-// ─── KPIResponse — pakai gorm column tag supaya Scan bekerja ─────────────────
+// ─── KPIResponse — pakai gorm column tag supaya Scan bekerjaaaa ─────────────────
 
 type KPIResponse struct {
 	PegawaiID string `gorm:"column:pegawai_id" json:"pegawaiId"`
