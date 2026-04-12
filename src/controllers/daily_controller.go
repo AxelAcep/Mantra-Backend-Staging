@@ -1145,7 +1145,6 @@ func ReadChat(c echo.Context) error {
 
 func GetUnreadChatCount(c echo.Context) error {
 	activityID := c.Param("id")
-
 	claims, ok := c.Get("user").(jwt.MapClaims)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
@@ -1153,30 +1152,161 @@ func GetUnreadChatCount(c echo.Context) error {
 	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
 	pegawaiID, _ := pegawaiMap["id"].(string)
 
-	var chats []models.ActivityChat
-	if err := config.DB.Where("activity_id = ? AND pegawai_id != ?", activityID, pegawaiID).Find(&chats).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
+	var count int64
+	// Hitung pesan yang:
+	// 1. Milik activity ini
+	// 2. Pengirimnya BUKAN saya
+	// 3. ID saya BELUM ada di read_by
+	// Menggunakan LIKE karena read_by diserialize sebagai text JSON oleh GORM
+	err := config.DB.Model(&models.ActivityChat{}).
+		Where("activity_id = ? AND pegawai_id != ? AND NOT (read_by LIKE ?)",
+			activityID, pegawaiID, fmt.Sprintf(`%%"%s"%%`, pegawaiID)).
+		Count(&count).Error
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghitung pesan."})
 	}
 
-	unread := 0
-	for _, chat := range chats {
-		alreadyRead := false
-		for _, id := range chat.ReadBy {
-			if id == pegawaiID {
-				alreadyRead = true
-				break
-			}
+	return c.JSON(http.StatusOK, map[string]interface{}{"unreadCount": count})
+}
+
+// ==========================================
+// GET TOTAL UNREAD CHAT COUNT (GLOBAL NOTIFICATION)
+// ==========================================
+
+func GetTotalUnreadChatCount(c echo.Context) error {
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	role, _ := claims["role"].(string)
+
+	var count int64
+	
+	// Query dasar untuk menghitung semua unread chat user ini
+	query := config.DB.Model(&models.ActivityChat{}).
+		Joins(`JOIN "Activity" a ON a.id = "ActivityChat".activity_id`).
+		Where(`"ActivityChat".pegawai_id != ? AND NOT ("ActivityChat".read_by LIKE ?)`, pegawaiID, fmt.Sprintf(`%%"%s"%%`, pegawaiID))
+
+	// Filter berdasarkan hak akses (sama seperti GetChatThreads)
+	if role != string(models.RoleMaster) {
+		query = query.Where(`a.pegawai_id = ? OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)`, pegawaiID, pegawaiID)
+	}
+
+	if err := query.Count(&count).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghitung total chat."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"totalUnread": count})
+}
+
+// ==========================================
+// GET ALL CHAT THREADS (NOTIFIKASI)
+// ==========================================
+
+func GetChatThreads(c echo.Context) error {
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	role, _ := claims["role"].(string)
+
+	// query dasar: ambil activity yang punya chat
+	query := config.DB.Table(`"Activity" a`).
+		Select(`a.*, last_chats.last_message_at`).
+		Joins(`JOIN (SELECT activity_id, MAX(created_at) as last_message_at FROM "ActivityChat" GROUP BY activity_id) last_chats ON a.id = last_chats.activity_id`)
+
+	// Filter berdasarkan role
+	if role != string(models.RoleMaster) {
+		query = query.Where(`a.pegawai_id = ? OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)`, pegawaiID, pegawaiID)
+	}
+
+	query = query.Order("last_chats.last_message_at DESC")
+
+	var activities []models.Activity
+	if err := query.Find(&activities).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil daftar chat."})
+	}
+
+	if len(activities) == 0 {
+		return c.JSON(http.StatusOK, map[string]interface{}{"data": []interface{}{}})
+	}
+
+	// Kumpulkan ID untuk fetch bulk
+	var activityIDs []string
+	var ownerIDs []string
+	for _, a := range activities {
+		activityIDs = append(activityIDs, a.ID)
+		ownerIDs = append(ownerIDs, a.PegawaiID)
+	}
+
+	// 1. Bulk fetch Unread Counts
+	type UnreadResult struct {
+		ActivityID string
+		Count      int64
+	}
+	var unreadCounts []UnreadResult
+	config.DB.Model(&models.ActivityChat{}).
+		Select("activity_id, COUNT(*) as count").
+		Where("activity_id IN ? AND pegawai_id != ? AND NOT (read_by LIKE ?)", activityIDs, pegawaiID, fmt.Sprintf(`%%"%s"%%`, pegawaiID)).
+		Group("activity_id").Scan(&unreadCounts)
+
+	unreadMap := make(map[string]int64)
+	for _, u := range unreadCounts {
+		unreadMap[u.ActivityID] = u.Count
+	}
+
+	// 2. Bulk fetch Owners
+	var owners []models.Pegawai
+	config.DB.Where("id IN ?", ownerIDs).Find(&owners)
+	ownerMap := make(map[string]models.Pegawai)
+	for _, o := range owners {
+		ownerMap[o.ID] = o
+	}
+
+	// 3. Bulk fetch Latest Messages
+	// Trick pada Postgres: Ambil ID message terakhir per activity lalu load the full models
+	var latestMsgIDs []string
+	config.DB.Raw(`
+		SELECT (array_agg(id ORDER BY created_at DESC))[1] as id
+		FROM "ActivityChat"
+		WHERE activity_id IN ?
+		GROUP BY activity_id
+	`, activityIDs).Scan(&latestMsgIDs)
+
+	var latestMsgs []models.ActivityChat
+	config.DB.Preload("Pegawai").Where("id IN ?", latestMsgIDs).Find(&latestMsgs)
+	msgMap := make(map[string]*models.ActivityChat)
+	for i := range latestMsgs {
+		msgMap[latestMsgs[i].ActivityID] = &latestMsgs[i]
+	}
+
+	// Enrich data (Membangun response akhir)
+	type ThreadData struct {
+		models.Activity
+		LastMessage *models.ActivityChat `json:"lastMessage"`
+		UnreadCount int64               `json:"unreadCount"`
+	}
+
+	results := make([]ThreadData, len(activities))
+	for i, a := range activities {
+		if owner, ok := ownerMap[a.PegawaiID]; ok {
+			a.Pegawai = owner
 		}
-		if !alreadyRead {
-			unread++
+
+		results[i] = ThreadData{
+			Activity:    a,
+			LastMessage: msgMap[a.ID],
+			UnreadCount: unreadMap[a.ID],
 		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message": "Berhasil.",
-		"data": map[string]int{
-			"unread": unread,
-		},
+		"data": results,
 	})
 }
 
