@@ -132,6 +132,7 @@ type Activity struct {
 	UpdatedAt              time.Time             `json:"updatedAt"`
 	AlasanPenolakan        *string               `gorm:"type:text" json:"alasanPenolakan,omitempty"`
 	NilaiKPI               *NilaiKPI             `gorm:"type:string;index" json:"nilaiKPI,omitempty"`
+	IsSupervised           bool                  `gorm:"default:false;not null" json:"isSupervised"`
 }
 
 // Index komposit untuk query yang paling sering: activity by pegawai + status (perlu tindakan, on progress, dll)

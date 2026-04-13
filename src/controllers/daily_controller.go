@@ -672,6 +672,7 @@ func KonfirmasiReschedule(c echo.Context) error {
 		reschedule.Status = models.StatusReschedule(req.Status)
 		if req.Status == string(models.StatusRescheduleDitolak) {
 			reschedule.AlasanPenolakan = &req.Alasan
+			activity.IsSupervised = false
 		}
 
 		if err := tx.Save(&reschedule).Error; err != nil {
@@ -682,6 +683,7 @@ func KonfirmasiReschedule(c echo.Context) error {
 		if req.Status == string(models.StatusRescheduleDiterima) {
 			activity.TargetSelesai = reschedule.TargetSelesaiBaru
 			activity.Status = models.StatusOnProgress
+			activity.IsSupervised = false
 
 			// update parent jika ada
 			if activity.ParentID != nil {
@@ -872,6 +874,7 @@ func KonfirmasiSelesai(c echo.Context) error {
 			pesanNotif = fmt.Sprintf("Pengajuan selesai ditolak. Alasan: %s", req.Alasan)
 			judulNotif = "Pengajuan Selesai Ditolak"
 			activity.AlasanPenolakan = &req.Alasan
+			activity.IsSupervised = false
 
 			if err := tx.Model(&models.ActivityKolaborator{}).
 				Where("child_activity_id = ?", activityID).
@@ -882,6 +885,7 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 		if req.Status == string(models.StatusDiterima) {
 			activity.NilaiKPI = &req.NilaiKPI
+			activity.IsSupervised = false
 
 			if err := tx.Model(&models.ActivityKolaborator{}).
 				Where("child_activity_id = ?", activityID).
@@ -891,7 +895,7 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 			// Handle KPI Counters — Atomic Upsert
 			minggu, bulan, tahun := getKPIPeriod(activity.TargetSelesai)
-			
+
 			fieldMap := map[models.NilaiKPI]string{
 				models.NilaiKPIBaik:  "baik",
 				models.NilaiKPICukup: "cukup",
@@ -912,9 +916,9 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 			// Atomic Create or Update counter
 			err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "pegawai_id"}, {Name: "bulan"}, {Name: "tahun"}, {Name: "minggu"}},
+				Columns: []clause.Column{{Name: "pegawai_id"}, {Name: "bulan"}, {Name: "tahun"}, {Name: "minggu"}},
 				DoUpdates: clause.Assignments(map[string]interface{}{
-					newField: gorm.Expr(fmt.Sprintf("\"KPIPegawai\".\"%s\" + 1", newField)),
+					newField:     gorm.Expr(fmt.Sprintf("\"KPIPegawai\".\"%s\" + 1", newField)),
 					"updated_at": time.Now(),
 				}),
 			}).Create(&kpi).Error
@@ -1195,9 +1199,9 @@ func ReadAllChat(c echo.Context) error {
 	// Update all chats that the user has not read yet
 	// We use raw SQL or loop? A loop is safer given GORM's JSON handling.
 	var unreadChats []models.ActivityChat
-	
+
 	// Find chats where pengirim != user AND user is not in read_by
-	err := config.DB.Where("pegawai_id != ? AND (read_by IS NULL OR NOT (read_by LIKE ?))", 
+	err := config.DB.Where("pegawai_id != ? AND (read_by IS NULL OR NOT (read_by LIKE ?))",
 		pegawaiID, fmt.Sprintf(`%%"%s"%%`, pegawaiID)).
 		Find(&unreadChats).Error
 
@@ -1260,7 +1264,7 @@ func GetTotalUnreadChatCount(c echo.Context) error {
 	role, _ := claims["role"].(string)
 
 	var count int64
-	
+
 	// Query dasar untuk menghitung semua unread chat user ini
 	query := config.DB.Model(&models.ActivityChat{}).
 		Joins(`JOIN "Activity" a ON a.id = "ActivityChat".activity_id`).
@@ -1365,7 +1369,7 @@ func GetChatThreads(c echo.Context) error {
 	type ThreadData struct {
 		models.Activity
 		LastMessage *models.ActivityChat `json:"lastMessage"`
-		UnreadCount int64               `json:"unreadCount"`
+		UnreadCount int64                `json:"unreadCount"`
 	}
 
 	results := make([]ThreadData, len(activities))

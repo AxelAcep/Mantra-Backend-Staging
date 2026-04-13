@@ -46,11 +46,15 @@ func ActivityRoutes(e *echo.Echo) {
 	g.GET("/master/riwayat", controllers.MasterGetActivitySemua, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/master/stats", controllers.MasterGetStats, middleware.VerifyToken, middleware.AuthorizeRole(1))
 
-	g.GET("/master/:id", controllers.MasterGetActivityDetail, middleware.VerifyToken, middleware.AuthorizeRole(1))
+	g.GET("/master/:id", controllers.MasterGetActivityDetail, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	g.GET("/master/karyawan", controllers.MasterGetKaryawan, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/master/kpi/:pegawaiId", controllers.MasterGetDetailKPI, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/master/riwayat2", controllers.MasterGetActivityRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(1))
 
+	g.GET("/supervisi/aktif", controllers.SupervisiGetActivityAktif, middleware.VerifyToken, middleware.AuthorizeRole(2))
+	g.GET("/supervisi/riwayat", controllers.SupervisiGetActivityRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(2))
+	g.PATCH("/supervisi/:id/supervised", controllers.SupervisiMarkAsSupervised, middleware.VerifyToken, middleware.AuthorizeRole(2))
+	g.GET("/supervisi/dashboard", controllers.GetSupervisiDashboardStats, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	//	GET /master/reschedule          → MasterGetReschedulePending
 	//
 	// GET /master/activity/selesai    → MasterGetActivitySelesai
