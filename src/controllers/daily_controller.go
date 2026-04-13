@@ -1094,6 +1094,51 @@ func KirimChat(c echo.Context) error {
 }
 
 // ==========================================
+// UPDATE CHAT
+// ==========================================
+
+func UpdateChat(c echo.Context) error {
+	chatId := c.Param("chatId")
+
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+
+	var req KirimChatRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Format request tidak valid."})
+	}
+	if req.Pesan == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Pesan tidak boleh kosong."})
+	}
+
+	var chat models.ActivityChat
+	if err := config.DB.Where("id = ?", chatId).First(&chat).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pesan tidak ditemukan."})
+	}
+
+	// Hanya boleh edit pesan sendiri
+	if chat.PegawaiID != pegawaiID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Anda tidak memiliki akses untuk mengubah pesan ini."})
+	}
+
+	chat.Pesan = req.Pesan
+	if err := config.DB.Save(&chat).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
+	}
+
+	config.DB.Preload("Pegawai").First(&chat, "id = ?", chat.ID)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Pesan berhasil diperbarui.",
+		"data":    chat,
+	})
+}
+
+// ==========================================
 // READ CHAT
 // ==========================================
 
@@ -1136,6 +1181,37 @@ func ReadChat(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Chat berhasil ditandai sudah dibaca.",
+	})
+}
+
+func ReadAllChat(c echo.Context) error {
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+
+	// Update all chats that the user has not read yet
+	// We use raw SQL or loop? A loop is safer given GORM's JSON handling.
+	var unreadChats []models.ActivityChat
+	
+	// Find chats where pengirim != user AND user is not in read_by
+	err := config.DB.Where("pegawai_id != ? AND (read_by IS NULL OR NOT (read_by LIKE ?))", 
+		pegawaiID, fmt.Sprintf(`%%"%s"%%`, pegawaiID)).
+		Find(&unreadChats).Error
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data chat."})
+	}
+
+	for _, chat := range unreadChats {
+		chat.ReadBy = append(chat.ReadBy, pegawaiID)
+		config.DB.Save(&chat)
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"message": "Semua chat berhasil ditandai sudah dibaca.",
 	})
 }
 

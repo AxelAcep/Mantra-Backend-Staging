@@ -131,6 +131,17 @@ func UploadDokumen(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan data dokumen"})
 	}
 
+	// Tambahkan notifikasi ke chat
+	chatNotice := models.ActivityChat{
+		ID:         uuid.New().String(),
+		ActivityID: activityID,
+		PegawaiID:  pegawaiID,
+		Pesan:      "[SYSTEM_NOTIFICATION]:menambahkan dokumen **" + file.Filename + "**",
+		ReadBy:     []string{pegawaiID},
+		CreatedAt:  time.Now(),
+	}
+	config.DB.Create(&chatNotice)
+
 	// Load relasi pegawai untuk response
 	config.DB.Preload("Pegawai").First(&dokumen, "id = ?", dokumen.ID)
 
@@ -173,6 +184,25 @@ func DeleteDokumen(c echo.Context) error {
 	// Hapus dari DB
 	if err := config.DB.Delete(&dokumen).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghapus dokumen"})
+	}
+
+	// Ambil claims dari token untuk notifikasi
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if ok {
+		pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
+		if ok2 {
+			pegawaiID, _ := pegawaiMap["id"].(string)
+			// Tambahkan notifikasi ke chat
+			chatNotice := models.ActivityChat{
+				ID:         uuid.New().String(),
+				ActivityID: activityID,
+				PegawaiID:  pegawaiID,
+				Pesan:      "[SYSTEM_NOTIFICATION]:menghapus dokumen **" + dokumen.NamaFile + "**",
+				ReadBy:     []string{pegawaiID},
+				CreatedAt:  time.Now(),
+			}
+			config.DB.Create(&chatNotice)
+		}
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "Dokumen berhasil dihapus"})
