@@ -957,9 +957,54 @@ func KonfirmasiSelesai(c echo.Context) error {
 func GetChat(c echo.Context) error {
 	activityID := c.Param("id")
 
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	role, _ := claims["role"].(string)
+
 	var activity models.Activity
-	if err := config.DB.Where("id = ?", activityID).First(&activity).Error; err != nil {
+	if err := config.DB.Preload("Pegawai").Where("id = ?", activityID).First(&activity).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
+	}
+
+	// === Authorization Check ===
+	isAuthorized := false
+	if role == string(models.RoleMaster) {
+		isAuthorized = true
+	} else if activity.PegawaiID == pegawaiID {
+		isAuthorized = true
+	} else {
+		// Cek kolaborator
+		var count int64
+		config.DB.Model(&models.ActivityKolaborator{}).
+			Where("activity_id = ? AND pegawai_id = ?", activityID, pegawaiID).
+			Count(&count)
+		if count > 0 {
+			isAuthorized = true
+		} else if activity.ParentID != nil {
+			// Cek parent owner
+			var parentActivity models.Activity
+			if err := config.DB.Where("id = ?", *activity.ParentID).First(&parentActivity).Error; err == nil {
+				if parentActivity.PegawaiID == pegawaiID {
+					isAuthorized = true
+				}
+			}
+		}
+
+		// Cek Supervisi (Same Divisi)
+		if !isAuthorized && role == string(models.RoleSupervisi) {
+			divisi, _ := pegawaiMap["divisi"].(string)
+			if activity.Pegawai.Divisi == models.Divisi(divisi) {
+				isAuthorized = true
+			}
+		}
+	}
+
+	if !isAuthorized {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Anda tidak memiliki akses untuk melihat chat ini."})
 	}
 
 	var chats []models.ActivityChat
@@ -1272,7 +1317,13 @@ func GetTotalUnreadChatCount(c echo.Context) error {
 
 	// Filter berdasarkan hak akses (sama seperti GetChatThreads)
 	if role != string(models.RoleMaster) {
-		query = query.Where(`a.pegawai_id = ? OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)`, pegawaiID, pegawaiID)
+		divisi, _ := pegawaiMap["divisi"].(string)
+		query = query.Where(`
+			a.pegawai_id = ? 
+			OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)
+			OR a.parent_id IN (SELECT id FROM "Activity" WHERE pegawai_id = ?)
+			OR (? = 'SUPERVISI' AND a.pegawai_id IN (SELECT id FROM "Pegawai" WHERE divisi = ?))
+		`, pegawaiID, pegawaiID, pegawaiID, role, divisi)
 	}
 
 	if err := query.Count(&count).Error; err != nil {
@@ -1302,7 +1353,13 @@ func GetChatThreads(c echo.Context) error {
 
 	// Filter berdasarkan role
 	if role != string(models.RoleMaster) {
-		query = query.Where(`a.pegawai_id = ? OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)`, pegawaiID, pegawaiID)
+		divisi, _ := pegawaiMap["divisi"].(string)
+		query = query.Where(`
+			a.pegawai_id = ? 
+			OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)
+			OR a.parent_id IN (SELECT id FROM "Activity" WHERE pegawai_id = ?)
+			OR (? = 'SUPERVISI' AND a.pegawai_id IN (SELECT id FROM "Pegawai" WHERE divisi = ?))
+		`, pegawaiID, pegawaiID, pegawaiID, role, divisi)
 	}
 
 	query = query.Order("last_chats.last_message_at DESC")
