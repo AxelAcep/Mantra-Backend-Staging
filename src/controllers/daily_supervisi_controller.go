@@ -58,9 +58,10 @@ func SupervisiGetActivityAktif(c echo.Context) error {
 	sortDir := c.QueryParam("sortDir")
 	filterKategori := c.QueryParam("kategori")
 	filterStatus := c.QueryParam("status")
+	isSupervised := c.QueryParam("isSupervised")
 
 	query := baseSupervisiActivityQuery(divisi).
-		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
+	    Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
 		Where(`"Activity"."status" NOT IN ?`, []string{
 			string(models.StatusDiterima),
 			string(models.StatusDibatalkan),
@@ -80,9 +81,15 @@ func SupervisiGetActivityAktif(c echo.Context) error {
 	if filterStatus != "" {
 		if filterStatus == "OVERDUE" {
 			query = query.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" < ?`, models.StatusOnProgress, time.Now())
+		} else if filterStatus == string(models.StatusOnProgress) {
+			query = query.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" >= ?`, models.StatusOnProgress, time.Now())
 		} else {
 			query = query.Where(`"Activity"."status" = ?`, filterStatus)
 		}
+	}
+
+	if isSupervised != "" {
+		query = query.Where(`"Activity"."is_supervised" = ?`, isSupervised == "true")
 	}
 
 	orderClause := `"Activity"."created_at" DESC`
@@ -118,6 +125,7 @@ func SupervisiGetActivityRiwayat(c echo.Context) error {
 	sortDir := c.QueryParam("sortDir")
 	filterKategori := c.QueryParam("kategori")
 	filterStatus := c.QueryParam("status")
+	isSupervised := c.QueryParam("isSupervised")
 
 	query := baseSupervisiActivityQuery(divisi).
 		Joins(`JOIN "Pegawai" ON "Pegawai"."id" = "Activity"."pegawai_id"`).
@@ -139,6 +147,10 @@ func SupervisiGetActivityRiwayat(c echo.Context) error {
 	}
 	if filterStatus != "" {
 		query = query.Where(`"Activity"."status" = ?`, filterStatus)
+	}
+
+	if isSupervised != "" {
+		query = query.Where(`"Activity"."is_supervised" = ?`, isSupervised == "true")
 	}
 
 	orderClause := `"Activity"."created_at" DESC`

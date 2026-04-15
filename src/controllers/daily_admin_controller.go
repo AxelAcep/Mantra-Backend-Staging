@@ -272,6 +272,8 @@ func MasterGetActivityAktif(c echo.Context) error {
 	if filterStatus != "" {
 		if filterStatus == "OVERDUE" {
 			query = query.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" < ?`, models.StatusOnProgress, time.Now())
+		} else if filterStatus == string(models.StatusOnProgress) {
+			query = query.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" >= ?`, models.StatusOnProgress, time.Now())
 		} else {
 			query = query.Where(`"Activity"."status" = ?`, filterStatus)
 		}
