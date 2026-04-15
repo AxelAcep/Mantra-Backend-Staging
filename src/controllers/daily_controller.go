@@ -1319,11 +1319,39 @@ func GetTotalUnreadChatCount(c echo.Context) error {
 	if role != string(models.RoleMaster) {
 		divisi, _ := pegawaiMap["divisi"].(string)
 		query = query.Where(`
-			a.pegawai_id = ? 
-			OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)
-			OR a.parent_id IN (SELECT id FROM "Activity" WHERE pegawai_id = ?)
-			OR (? = 'SUPERVISI' AND a.pegawai_id IN (SELECT id FROM "Pegawai" WHERE divisi = ?))
-		`, pegawaiID, pegawaiID, pegawaiID, role, divisi)
+			-- [1] Daily activity dari activity milik sendiri
+			a.id IN (
+				SELECT id FROM "Activity" WHERE pegawai_id = ?
+			)
+
+			-- [2] Daily activity dari activity yang ditugaskan ke dia sebagai kolaborator
+			--     HANYA child activity (parent_id IS NOT NULL), bukan parent activity
+			OR a.id IN (
+				SELECT ak.activity_id 
+				FROM "ActivityKolaborator" ak
+				JOIN "Activity" a ON a.id = ak.activity_id
+				WHERE ak.pegawai_id = ?
+				AND a.parent_id IS NOT NULL
+			)
+
+			-- [3] Parent dapat melihat daily activity dari child activity miliknya
+			OR a.id IN (
+				SELECT id FROM "Activity"
+				WHERE parent_id IN (
+					SELECT id FROM "Activity" WHERE pegawai_id = ?
+					UNION
+					SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?
+				)
+			)
+
+			-- [4] Supervisi: melihat semua daily activity se-divisi
+			OR (? = 'SUPERVISI' AND a.id IN (
+				SELECT id FROM "Activity"
+				WHERE pegawai_id IN (
+					SELECT id FROM "Pegawai" WHERE divisi = ?
+				)
+			))
+		`, pegawaiID, pegawaiID, pegawaiID, pegawaiID, role, divisi)
 	}
 
 	if err := query.Count(&count).Error; err != nil {
@@ -1355,11 +1383,39 @@ func GetChatThreads(c echo.Context) error {
 	if role != string(models.RoleMaster) {
 		divisi, _ := pegawaiMap["divisi"].(string)
 		query = query.Where(`
-			a.pegawai_id = ? 
-			OR a.id IN (SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?)
-			OR a.parent_id IN (SELECT id FROM "Activity" WHERE pegawai_id = ?)
-			OR (? = 'SUPERVISI' AND a.pegawai_id IN (SELECT id FROM "Pegawai" WHERE divisi = ?))
-		`, pegawaiID, pegawaiID, pegawaiID, role, divisi)
+			-- [1] Daily activity dari activity milik sendiri
+			a.id IN (
+				SELECT id FROM "Activity" WHERE pegawai_id = ?
+			)
+
+			-- [2] Daily activity dari activity yang ditugaskan ke dia sebagai kolaborator
+			--     HANYA child activity (parent_id IS NOT NULL), bukan parent activity
+			OR a.id IN (
+				SELECT ak.activity_id 
+				FROM "ActivityKolaborator" ak
+				JOIN "Activity" a ON a.id = ak.activity_id
+				WHERE ak.pegawai_id = ?
+				AND a.parent_id IS NOT NULL
+			)
+
+			-- [3] Parent dapat melihat daily activity dari child activity miliknya
+			OR a.id IN (
+				SELECT id FROM "Activity"
+				WHERE parent_id IN (
+					SELECT id FROM "Activity" WHERE pegawai_id = ?
+					UNION
+					SELECT activity_id FROM "ActivityKolaborator" WHERE pegawai_id = ?
+				)
+			)
+
+			-- [4] Supervisi: melihat semua daily activity se-divisi
+			OR (? = 'SUPERVISI' AND a.id IN (
+				SELECT id FROM "Activity"
+				WHERE pegawai_id IN (
+					SELECT id FROM "Pegawai" WHERE divisi = ?
+				)
+			))
+		`, pegawaiID, pegawaiID, pegawaiID, pegawaiID, role, divisi)
 	}
 
 	query = query.Order("last_chats.last_message_at DESC")
