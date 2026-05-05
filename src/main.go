@@ -50,6 +50,7 @@ func main() {
 	routes.ActivityRoutes(e)
 	routes.KPIRoutes(e)
 	routes.PerusahaanRoutes(e)
+	routes.TrackingPenawaranRoutes(e)
 
 	e.Logger.Fatal(e.Start(":8080"))
 }

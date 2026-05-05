@@ -52,6 +52,9 @@ const (
 	StatusKonfirmasiSelesai StatusActivity = "KONFIRMASI_SELESAI"
 	StatusDitolak           StatusActivity = "DITOLAK"
 	StatusDibatalkan        StatusActivity = "DIBATALKAN"
+	StatusPerluTindakan StatusActivity = "PERLU_TINDAKAN"
+	StatusSelesai       StatusActivity = "SELESAI"
+
 )
 
 const (
