@@ -32,7 +32,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	// ── 5. DYNAMIC /:id — harus paling bawah ─────────────────────────────────
 	g.GET("/:id", controllers.GetDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/detail", controllers.UpdateDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
-	g.PATCH("/:id/presales", controllers.AssignPreSales, middleware.VerifyToken, middleware.AuthorizeRole(1))
+	g.PATCH("/:id/presales", controllers.AssignPreSales, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	g.PATCH("/:id/status", controllers.UpdateStatusPermintaanMasuk, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// ── 6. CHAT DYNAMIC — harus setelah static chat ───────────────────────────

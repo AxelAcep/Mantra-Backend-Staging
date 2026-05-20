@@ -63,6 +63,7 @@ type TrackingPenawaran struct {
 	CustomerEmail  string           `gorm:"not null"                                json:"customerEmail"`
 	JenisPenawaran []JenisPenawaran `gorm:"serializer:json;not null"                json:"jenisPenawaran"`
 	StepSaatIni    StepPenawaran    `gorm:"not null;default:PERMINTAAN_MASUK;index" json:"stepSaatIni"`
+	Status		   StatusActivity   `gorm:"not null;default:ON_PROGRESS;index"      json:"status"`
 
 	PermintaanMasuk      *PermintaanMasuk      `gorm:"foreignKey:TrackingPenawaranID" json:"permintaanMasuk,omitempty"`
 	PenyusunanBoQ        *PenyusunanBoQ        `gorm:"foreignKey:TrackingPenawaranID" json:"penyusunanBoQ,omitempty"`
@@ -103,6 +104,9 @@ type PenyusunanBoQ struct {
 	ActivityID          *string           `gorm:"index"                                         json:"activityId,omitempty"`
 	Activity            *Activity         `gorm:"foreignKey:ActivityID;references:ID"           json:"activity,omitempty"`
 	EstimasiHarga       *float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
+	Harga1        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
+	Harga2        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
+	Harga3        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
 	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"            json:"status"`
 	Dokumen             []PenawaranDokumen `gorm:"foreignKey:PenyusunanBoQID"                   json:"dokumen,omitempty"`
 	CreatedAt           time.Time         `gorm:"index"                                         json:"createdAt"`

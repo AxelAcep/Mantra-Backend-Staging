@@ -1,16 +1,16 @@
 package controllers
 
 import (
-	"math"
-    "strconv"
-    "strings"
 	"fmt"
 	"mantra/src/config"
 	"mantra/src/models"
+	"math"
 	"net/http"
-	"time"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -278,6 +278,8 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.
 		Where("tracking_penawaran_id = ?", trackingID).
+		Preload("TrackingPenawaran.Perusahaan").
+		Preload("Activity").
 		First(&permintaanMasuk).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
 	}
@@ -295,18 +297,31 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		appendLog(&permintaanMasuk, "Tolak", body.Alasan, pegawaiID, namaPegawai)
 		config.DB.Save(&permintaanMasuk)
 
+		config.DB.Model(&models.TrackingPenawaran{}).
+			Where("id = ?", trackingID).
+			Update("status", models.StatusPerluTindakan)
+
 	case "KONFIRMASI_SELESAI":
 		if roleStr == "MASTER" {
+			if permintaanMasuk.PreSalesID == nil {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "PreSales belum ditentukan."})
+			}
+
 			permintaanMasuk.Status = models.StatusSelesai
 			appendLog(&permintaanMasuk, "Konfirmasi Selesai Diterima", "Permintaan masuk disetujui, lanjut ke BoQ", pegawaiID, namaPegawai)
 			config.DB.Save(&permintaanMasuk)
 
 			config.DB.Model(&models.TrackingPenawaran{}).
 				Where("id = ?", trackingID).
-				Update("step_saat_ini", models.StepPenyusunanBoQ)
+				Updates(map[string]interface{}{
+					"step_saat_ini": models.StepPenyusunanBoQ,
+					"status":        models.StatusOnProgress,
+				})
 
 			var existingBoQ models.PenyusunanBoQ
-			if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingBoQ).Error; err != nil {
+			boqExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingBoQ).Error == nil
+
+			if !boqExists {
 				boq := models.PenyusunanBoQ{
 					ID:                  uuid.New().String(),
 					TrackingPenawaranID: trackingID,
@@ -315,13 +330,45 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 					CreatedAt:           time.Now(),
 					UpdatedAt:           time.Now(),
 				}
-				config.DB.Create(&boq)
+				if err := config.DB.Create(&boq).Error; err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat BoQ."})
+				}
+
+	
+				kategori := models.KategoriBillOfQuantity	
+			
+
+				nomorPO := ""
+				if permintaanMasuk.TrackingPenawaran.NomorPO != nil {
+					nomorPO = *permintaanMasuk.TrackingPenawaran.NomorPO
+				}
+				namaPerusahaan := permintaanMasuk.TrackingPenawaran.Perusahaan.Nama
+
+				dailyBoq := models.Activity{
+					ID:            generateActivityID(),
+					PegawaiID:     *permintaanMasuk.PreSalesID,
+					TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+					Perusahaan:    &namaPerusahaan,
+					Kategori:      kategori,
+					Judul:         "Pembuatan BOQ " + namaPerusahaan,
+					Deskripsi:     "Activity otomatis dari penawaran #" + nomorPO,
+					WaktuMulai:    time.Now(),
+					TargetSelesai: time.Now().Add(24 * time.Hour),
+					Status:        models.StatusOnProgress,
+				}
+				if err := config.DB.Create(&dailyBoq).Error; err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
+				}
 			}
 
 		} else {
 			permintaanMasuk.Status = models.StatusKonfirmasiSelesai
 			appendLog(&permintaanMasuk, "Konfirmasi Selesai Diajukan", "Menunggu persetujuan Master", pegawaiID, namaPegawai)
 			config.DB.Save(&permintaanMasuk)
+
+			config.DB.Model(&models.TrackingPenawaran{}).
+				Where("id = ?", trackingID).
+				Update("status", models.StatusKonfirmasiSelesai)
 		}
 
 	default:
@@ -648,7 +695,6 @@ func GetTrackingPenawaranList(c echo.Context) error {
 
 	isMaster, _ := c.Get("isMaster").(bool)
 
-	// ── Query params ──
 	page := max(1, toInt(c.QueryParam("page"), 1))
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
@@ -657,9 +703,8 @@ func GetTrackingPenawaranList(c echo.Context) error {
 
 	offset := (page - 1) * limit
 
-	// ── Base query ──
 	query := config.DB.Model(&models.TrackingPenawaran{}).
-    Where(`"step_saat_ini" IN ?`, stepsPengadaan)
+		Where(`"step_saat_ini" IN ?`, stepsPengadaan)
 
 	if search != "" {
 		like := "%" + search + "%"
@@ -673,13 +718,11 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		query = query.Where(`"step_saat_ini" = ?`, filterStep)
 	}
 
-	// ── Count ──
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
 	}
 
-	// ── Fetch ──
 	var rows []models.TrackingPenawaran
 	err := query.
 		Preload("Marketing").
@@ -694,7 +737,6 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal mengambil data"})
 	}
 
-	// ── Map response ──
 	items := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
 		item := PenawaranListItem{
@@ -702,24 +744,21 @@ func GetTrackingPenawaranList(c echo.Context) error {
 			NomorPenawaran: r.NomorPenawaran,
 			TanggalMasuk:   r.CreatedAt,
 			StepSaatIni:    r.StepSaatIni,
+			Status:         r.Status, // dari field baru TrackingPenawaran
 		}
 
-		// PIC Req = Marketing (yang input penawaran)
 		item.PICReq = &PegawaiSummary{
 			ID:   r.Marketing.ID,
 			Nama: r.Marketing.Nama,
 		}
 
-		// Pembuat Penawaran = PreSales di PermintaanMasuk
 		if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
 			item.PembuatPenawaran = &PegawaiSummary{
 				ID:   r.PermintaanMasuk.PreSales.ID,
 				Nama: r.PermintaanMasuk.PreSales.Nama,
 			}
-			item.Status = r.PermintaanMasuk.Status
 		}
 
-		// Estimasi harga hanya untuk master
 		if isMaster && r.PenyusunanBoQ != nil {
 			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
 		}
