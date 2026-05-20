@@ -41,4 +41,10 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.PATCH("/:id/chat/read", controllers.ReadPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/:id/chat/unread", controllers.GetUnreadPenawaranChatCount, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/marketing", controllers.AssignMarketing, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	g.GET("/:id/boq", controllers.GetDetailBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/boq/subtotal", controllers.UpdateSubTotalBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/boq/dokumen", controllers.UploadDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.DELETE("/:id/boq/dokumen/:dokumenId", controllers.DeleteDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/boq/status", controllers.UpdateStatusBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 }

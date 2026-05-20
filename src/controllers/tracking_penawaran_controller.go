@@ -327,6 +327,15 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 					TrackingPenawaranID: trackingID,
 					PembuatID:           permintaanMasuk.PreSalesID,
 					Status:              models.StatusOnProgress,
+					LogAktivitas: []models.LogBoq{
+						{
+							Aksi:        "BoQ telah dimulai",
+							Keterangan:  "Proses penyusunan BoQ baru saja diinisialisasi.",
+							PegawaiID:   *permintaanMasuk.PreSalesID, // Pastikan di-dereference jika PreSalesID bertipe pointer string (*string)
+							NamaPegawai: *&permintaanMasuk.PreSales.Nama,         // Sesuaikan jika ada variabel nama pegawai yang tersedia di scope fungsi lu
+							CreatedAt:   time.Now(),
+						},
+					},
 					CreatedAt:           time.Now(),
 					UpdatedAt:           time.Now(),
 				}

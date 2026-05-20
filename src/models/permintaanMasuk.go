@@ -47,6 +47,14 @@ type LogAktivitas struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
+type LogBoq struct {
+	Aksi        string    `json:"aksi"`
+	Keterangan  string    `json:"keterangan"`
+	PegawaiID   string    `json:"pegawaiId"`
+	NamaPegawai string    `json:"namaPegawai"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 // ─── Tracking Penawaran (Master) ──────────────────────────────────────────────
 
 type TrackingPenawaran struct {
@@ -96,23 +104,23 @@ type PermintaanMasuk struct {
 // ─── Step 2: Penyusunan BoQ ───────────────────────────────────────────────────
 
 type PenyusunanBoQ struct {
-	ID                  string            `gorm:"primaryKey"                                    json:"id"`
-	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                    json:"trackingPenawaranId"`
-	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID"  json:"trackingPenawaran,omitempty"`
-	PembuatID           *string           `gorm:"index"                                         json:"pembuatId,omitempty"`
-	Pembuat             *Pegawai          `gorm:"foreignKey:PembuatID;references:ID"            json:"pembuat,omitempty"`
-	ActivityID          *string           `gorm:"index"                                         json:"activityId,omitempty"`
-	Activity            *Activity         `gorm:"foreignKey:ActivityID;references:ID"           json:"activity,omitempty"`
-	EstimasiHarga       *float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
-	Harga1        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
-	Harga2        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
-	Harga3        		*float64          `gorm:"default:null"                                  json:"estimasiHarga,omitempty"`
-	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"            json:"status"`
-	Dokumen             []PenawaranDokumen `gorm:"foreignKey:PenyusunanBoQID"                   json:"dokumen,omitempty"`
-	CreatedAt           time.Time         `gorm:"index"                                         json:"createdAt"`
-	UpdatedAt           time.Time         `                                                      json:"updatedAt"`
+    ID                  string            `gorm:"primaryKey" json:"id"`
+    TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index" json:"trackingPenawaranId"`
+    TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+    PembuatID           *string           `gorm:"index" json:"pembuatId,omitempty"`
+    Pembuat             *Pegawai          `gorm:"foreignKey:PembuatID;references:ID" json:"pembuat,omitempty"`
+    ActivityID          *string           `gorm:"index" json:"activityId,omitempty"`
+    Activity            *Activity         `gorm:"foreignKey:ActivityID;references:ID" json:"activity,omitempty"`
+    EstimasiHarga       *float64          `gorm:"default:null" json:"estimasiHarga,omitempty"`
+    Harga1              *float64          `gorm:"default:null" json:"harga1,omitempty"`
+    Harga2              *float64          `gorm:"default:null" json:"harga2,omitempty"`
+    Harga3              *float64          `gorm:"default:null" json:"harga3,omitempty"`
+    Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index" json:"status"`
+    LogAktivitas        []LogBoq          `gorm:"serializer:json;default:'[]'" json:"logs"`
+    Dokumen             []PenawaranDokumen `gorm:"foreignKey:PenyusunanBoQID" json:"dokumen,omitempty"`
+    CreatedAt           time.Time         `gorm:"index" json:"createdAt"`
+    UpdatedAt           time.Time         ` json:"updatedAt"`
 }
-
 // ─── Step 3: Review Internal ──────────────────────────────────────────────────
 
 type ReviewInternal struct {
