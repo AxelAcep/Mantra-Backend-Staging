@@ -47,97 +47,120 @@ func GetDetailPersetujuanManajemen(c echo.Context) error {
 // ── Update Status ──────────────────────────────────────────────────────────
 
 func UpdateStatusPersetujuanManajemen(c echo.Context) error {
-    trackingID := c.Param("id")
+	trackingID := c.Param("id")
 
-    _, namaPegawai, roleStr, divisiStr, ok := getReviewClaims(c)
-    if !ok {
-        return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
-    }
-    _ = namaPegawai
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getReviewClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
 
-    var body struct {
-        Status string `json:"status"`
-        Alasan string `json:"alasanPenolakan"`
-    }
-    if err := c.Bind(&body); err != nil {
-        return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
-    }
+	var body struct {
+		Status string `json:"status"`
+		Alasan string `json:"alasanPenolakan"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
 
-    var persetujuan models.PersetujuanManajemen
-    if err := config.DB.
-        Where("tracking_penawaran_id = ?", trackingID).
-        First(&persetujuan).Error; err != nil {
-        return c.JSON(http.StatusNotFound, map[string]string{"error": "Persetujuan Manajemen tidak ditemukan."})
-    }
+	var persetujuan models.PersetujuanManajemen
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&persetujuan).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Persetujuan Manajemen tidak ditemukan."})
+	}
 
-    isDirekturKomisaris := divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
-    isSalesPresalesSupervisi :=
-        divisiStr == "SALES" ||
-        divisiStr == "PRESALES" ||
-        (roleStr == "SUPERVISI" && divisiStr == "SALES")
+	isDirekturKomisaris := divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
+	isSalesPresalesSupervisi :=
+		divisiStr == "SALES" ||
+		divisiStr == "PRESALES" ||
+		divisiStr == "MANAGER_OPERASIONAL" ||
+		(roleStr == "SUPERVISI" && divisiStr == "SALES")
 
-    switch body.Status {
+	switch body.Status {
 
-    case "ACC":
-        if !isDirekturKomisaris {
-            return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa acc."})
-        }
-        if persetujuan.Status == models.StatusPerluTindakan {
-            return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status perlu tindakan, harus dikonfirmasi ulang dulu."})
-        }
+	case "ACC":
+		if !isDirekturKomisaris {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa acc."})
+		}
+		if persetujuan.Status == models.StatusPerluTindakan {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status perlu tindakan, harus dikonfirmasi ulang dulu."})
+		}
 
-        persetujuan.AccDirekturKomisaris = true
-        persetujuan.Status = models.StatusSelesai
-        config.DB.Save(&persetujuan)
+		persetujuan.AccDirekturKomisaris = true
+		persetujuan.Status = models.StatusSelesai
 
-        config.DB.Model(&models.TrackingPenawaran{}).
-            Where("id = ?", trackingID).
-            Updates(map[string]interface{}{
-                "step_saat_ini": models.StepFollowUp,
-                "status":        models.StatusOnProgress,
-            })
+		appendPersetujuanManajemenLog(
+			&persetujuan,
+			"ACC Direktur/Komisaris",
+			"Persetujuan Manajemen disetujui oleh Direktur/Komisaris",
+			pegawaiID,
+			namaPegawai,
+		)
 
-    case "PERLU_TINDAKAN":
-        if !isDirekturKomisaris {
-            return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa menolak."})
-        }
-        if body.Alasan == "" {
-            return c.JSON(http.StatusBadRequest, map[string]string{"error": "Alasan wajib diisi."})
-        }
-        persetujuan.Status = models.StatusPerluTindakan
-        config.DB.Save(&persetujuan)
+		config.DB.Model(&models.TrackingPenawaran{}).
+			Where("id = ?", trackingID).
+			Updates(map[string]interface{}{
+				"step_saat_ini": models.StepFollowUp,
+				"status":        models.StatusOnProgress,
+			})
 
-        config.DB.Model(&models.TrackingPenawaran{}).
-            Where("id = ?", trackingID).
-            Update("status", models.StatusPerluTindakan)
+	case "PERLU_TINDAKAN":
+		if !isDirekturKomisaris {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa menolak."})
+		}
+		if body.Alasan == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Alasan wajib diisi."})
+		}
 
-    case "ON_PROGRESS":
-        if !isSalesPresalesSupervisi {
-            return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Sales, Presales, atau Supervisi yang bisa konfirmasi ulang."})
-        }
-        if persetujuan.Status != models.StatusPerluTindakan {
-            return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status bukan Perlu Tindakan."})
-        }
-        persetujuan.Status = models.StatusOnProgress
-        config.DB.Save(&persetujuan)
+		persetujuan.Status = models.StatusPerluTindakan
 
-        config.DB.Model(&models.TrackingPenawaran{}).
-            Where("id = ?", trackingID).
-            Update("status", models.StatusOnProgress)
+		appendPersetujuanManajemenLog(
+			&persetujuan,
+			"Perlu Tindakan: "+body.Alasan,
+			body.Alasan,
+			pegawaiID,
+			namaPegawai,
+		)
 
-    default:
-        return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status tidak valid."})
-    }
+		config.DB.Model(&models.TrackingPenawaran{}).
+			Where("id = ?", trackingID).
+			Update("status", models.StatusPerluTindakan)
 
-    updated, err := preloadPersetujuanManajemen(trackingID)
-    if err != nil {
-        return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data terbaru."})
-    }
+	case "ON_PROGRESS":
+		if !isSalesPresalesSupervisi {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Sales, Presales, Manager Operasional, atau Supervisi yang bisa konfirmasi ulang."})
+		}
+		if persetujuan.Status != models.StatusPerluTindakan {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status bukan Perlu Tindakan."})
+		}
 
-    return c.JSON(http.StatusOK, map[string]interface{}{
-        "message": "Status berhasil diupdate.",
-        "data":    updated,
-    })
+		persetujuan.Status = models.StatusOnProgress
+
+		appendPersetujuanManajemenLog(
+			&persetujuan,
+			"Konfirmasi Ulang",
+			"Persetujuan Manajemen dikonfirmasi ulang dan diproses kembali",
+			pegawaiID,
+			namaPegawai,
+		)
+
+		config.DB.Model(&models.TrackingPenawaran{}).
+			Where("id = ?", trackingID).
+			Update("status", models.StatusOnProgress)
+
+	default:
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Status tidak valid."})
+	}
+
+	updated, err := preloadPersetujuanManajemen(trackingID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data terbaru."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Status berhasil diupdate.",
+		"data":    updated,
+	})
 }
 
 func UploadDokumenPersetujuanManajemen(c echo.Context) error {
