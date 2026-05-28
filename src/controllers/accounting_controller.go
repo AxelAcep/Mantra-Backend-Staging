@@ -26,7 +26,6 @@ func hitungTotalPersentase(items []models.ItemTermin) float64 {
 // ─── GET /tracking-penawaran/:id/accounting ───────────────────────────────────
 
 func GetAccounting(c echo.Context) error {
-	
 	trackingID := c.Param("id")
 
 	var termin models.TerminPembayaran
@@ -85,10 +84,6 @@ type ItemTerminInput struct {
 }
 
 func CreateAccounting(c echo.Context) error {
-	pegawai := c.Get("pegawai").(models.Pegawai)
-	if !isAllowedAccounting(pegawai) {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak"})
-	}
 	trackingID := c.Param("id")
 
 	// Cek persetujuan manajemen sudah DONE
@@ -128,6 +123,8 @@ func CreateAccounting(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Total persentase harus 100%"})
 	}
 
+	pegawai := c.Get("pegawai").(models.Pegawai)
+
 	termin := models.TerminPembayaran{
 		ID:                  uuid.New().String(),
 		TrackingPenawaranID: trackingID,
@@ -160,10 +157,6 @@ func CreateAccounting(c echo.Context) error {
 // Replace semua items (kirim ulang full list)
 
 func UpdateAccounting(c echo.Context) error {
-		pegawai := c.Get("pegawai").(models.Pegawai)
-	if !isAllowedAccounting(pegawai) {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak"})
-	}
 	trackingID := c.Param("id")
 
 	var termin models.TerminPembayaran
@@ -222,10 +215,6 @@ func UpdateAccounting(c echo.Context) error {
 // ─── PATCH /tracking-penawaran/:id/accounting/item/:itemId/bayar ─────────────
 
 func BayarItemTermin(c echo.Context) error {
-	pegawai := c.Get("pegawai").(models.Pegawai)
-	if !isAllowedAccounting(pegawai) {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak"})
-	}
 	itemID := c.Param("itemId")
 
 	var item models.ItemTermin
@@ -244,16 +233,3 @@ func BayarItemTermin(c echo.Context) error {
 	return c.JSON(http.StatusOK, item)
 }
 
-func isAllowedAccounting(pegawai models.Pegawai) bool {
-	allowed := []models.Divisi{
-		models.DivisiFinanceAccounting,
-		models.DivisiDirektur,
-		models.DivisiManagerOperasional,
-	}
-	for _, d := range allowed {
-		if pegawai.Divisi == d {
-			return true
-		}
-	}
-	return false
-}
