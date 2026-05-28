@@ -78,7 +78,7 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 
 	switch body.Status {
 
-	case "ACC":
+	case "SELESAI":
 		if !isDirekturKomisaris {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa acc."})
 		}
@@ -91,7 +91,7 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 
 		appendPersetujuanManajemenLog(
 			&persetujuan,
-			"ACC Direktur/Komisaris",
+			"Approve Direktur/Komisaris",
 			"Persetujuan Manajemen disetujui oleh Direktur/Komisaris",
 			pegawaiID,
 			namaPegawai,

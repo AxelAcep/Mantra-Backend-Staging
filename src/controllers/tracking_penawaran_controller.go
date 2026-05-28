@@ -687,10 +687,15 @@ type PenawaranListResponse struct {
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 var stepsPengadaan = []models.StepPenawaran{
-	models.StepPermintaanMasuk,
-	models.StepPenyusunanBoQ,
-	models.StepReviewInternal,
-	models.StepPersetujuanManajemen,
+    models.StepPermintaanMasuk,
+    models.StepPenyusunanBoQ,
+    models.StepReviewInternal,
+    models.StepPersetujuanManajemen, 
+	 models.StepFollowUp,
+}
+
+var stepsAktif = []models.StepPenawaran{
+    models.StepFollowUp,
 }
 
 // ─── GET /tracking-penawaran ──────────────────────────────────────────────────
@@ -713,6 +718,98 @@ func GetTrackingPenawaranList(c echo.Context) error {
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
 		Where(`"step_saat_ini" IN ?`, stepsPengadaan)
+
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ?`,
+			like, like, like,
+		)
+	}
+
+	if filterStep != "" {
+		query = query.Where(`"step_saat_ini" = ?`, filterStep)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
+	}
+
+	var rows []models.TrackingPenawaran
+	err := query.
+		Preload("Marketing").
+		Preload("PermintaanMasuk.PreSales").
+		Preload("PenyusunanBoQ").
+		Preload("PenyusunanBoQ.Pembuat").
+		Order(`"created_at" DESC`).
+		Limit(limit).
+		Offset(offset).
+		Find(&rows).Error
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal mengambil data"})
+	}
+
+	items := make([]PenawaranListItem, 0, len(rows))
+	for _, r := range rows {
+		item := PenawaranListItem{
+			ID:             r.ID,
+			NomorPenawaran: r.NomorPenawaran,
+			TanggalMasuk:   r.CreatedAt,
+			StepSaatIni:    r.StepSaatIni,
+			Status:         r.Status, // dari field baru TrackingPenawaran
+		}
+
+		item.PICReq = &PegawaiSummary{
+			ID:   r.Marketing.ID,
+			Nama: r.Marketing.Nama,
+		}
+
+		if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
+			item.PembuatPenawaran = &PegawaiSummary{
+				ID:   r.PermintaanMasuk.PreSales.ID,
+				Nama: r.PermintaanMasuk.PreSales.Nama,
+			}
+		}
+
+		if isMaster && r.PenyusunanBoQ != nil {
+			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
+		}
+
+		items = append(items, item)
+	}
+
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+
+	return c.JSON(http.StatusOK, PenawaranListResponse{
+		Data: items,
+		Meta: PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+func GetTrackingPenawaranAktif(c echo.Context) error {
+	pegawaiID, ok := getPenawaranPegawaiID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+
+	isMaster, _ := c.Get("isMaster").(bool)
+
+	page := max(1, toInt(c.QueryParam("page"), 1))
+	limit := max(1, toInt(c.QueryParam("limit"), 20))
+	search := strings.TrimSpace(c.QueryParam("search"))
+	filterStep := c.QueryParam("step")
+	_ = pegawaiID
+
+	offset := (page - 1) * limit
+
+	query := config.DB.Model(&models.TrackingPenawaran{}).
+		Where(`"step_saat_ini" IN ?`, stepsAktif)
 
 	if search != "" {
 		like := "%" + search + "%"
