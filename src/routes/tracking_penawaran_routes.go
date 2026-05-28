@@ -60,4 +60,10 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.POST("/:id/persetujuan-manajemen/dokumen", controllers.UploadDokumenPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/:id/persetujuan-manajemen/dokumen/:dokumenId", controllers.DeleteDokumenPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/persetujuan-manajemen/status", controllers.UpdateStatusPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	// ── 10. ACCOUNTING ───────────────────────────────────────────────────────
+	g.GET("/:id/accounting", controllers.GetAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/accounting", controllers.CreateAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/accounting", controllers.UpdateAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/accounting/item/:itemId/bayar", controllers.BayarItemTermin, middleware.VerifyToken, middleware.AuthorizeRole(3))
 }

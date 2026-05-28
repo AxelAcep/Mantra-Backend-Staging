@@ -93,6 +93,7 @@ type TrackingPenawaran struct {
 	PenyusunanBoQ        *PenyusunanBoQ        `gorm:"foreignKey:TrackingPenawaranID" json:"penyusunanBoQ,omitempty"`
 	ReviewInternal       *ReviewInternal       `gorm:"foreignKey:TrackingPenawaranID" json:"reviewInternal,omitempty"`
 	PersetujuanManajemen *PersetujuanManajemen `gorm:"foreignKey:TrackingPenawaranID" json:"persetujuanManajemen,omitempty"`
+	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
 
@@ -197,6 +198,34 @@ type PenawaranChat struct {
 	CreatedAt           time.Time `gorm:"index"                              json:"createdAt"`
 }
 
+type TerminPembayaran struct {
+	ID                  string            `gorm:"primaryKey"                                   json:"id"`
+	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+	CreatedBy           string            `gorm:"not null;index"                               json:"createdBy"`
+	Pegawai             Pegawai           `gorm:"foreignKey:CreatedBy;references:ID"           json:"pegawai,omitempty"`
+	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+	Items               []ItemTermin      `gorm:"foreignKey:TerminPembayaranID"                json:"items,omitempty"`
+	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`
+	UpdatedAt           time.Time         `                                                     json:"updatedAt"`
+}
+
+type ItemTermin struct {
+	ID                string    `gorm:"primaryKey"         json:"id"`
+	TerminPembayaranID string   `gorm:"not null;index"     json:"terminPembayaranId"`
+	Index             int       `gorm:"not null"           json:"index"`
+	NamaTermin        string    `gorm:"not null"           json:"namaTermin"`
+	Persentase        float64   `gorm:"not null"           json:"persentase"`
+	SudahDibayar      bool      `gorm:"not null;default:false" json:"sudahDibayar"`
+	TanggalDibayar    *time.Time `                          json:"tanggalDibayar,omitempty"`
+	Keterangan        *string   `                          json:"keterangan,omitempty"`
+	Deadline          *time.Time `gorm:"index"              json:"deadline,omitempty"`
+	CreatedAt         time.Time `gorm:"index"              json:"createdAt"`
+	UpdatedAt         time.Time `                          json:"updatedAt"`
+}
+
+func (TerminPembayaran) TableName() string { return "TerminPembayaran" }
+func (ItemTermin) TableName() string       { return "ItemTermin" }
 
 // ─── Table Names ──────────────────────────────────────────────────────────────
 
