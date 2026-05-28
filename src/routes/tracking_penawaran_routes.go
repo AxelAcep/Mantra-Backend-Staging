@@ -10,41 +10,53 @@ import (
 func TrackingPenawaranRoutes(e *echo.Echo) {
 	g := e.Group("/tracking-penawaran")
 
-	// ── 1. STATIC ROUTES — harus paling atas ─────────────────────────────────
-
+	// ── 1. STATIC ROUTES ─────────────────────────────────────────────────────
 	g.GET("", controllers.GetTrackingPenawaranList, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("", controllers.CreateTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/mo/all", controllers.GetTrackingPenawaranMO, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/pegawai", controllers.GetPegawaiByDivisi, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// ── 2. CHAT STATIC — harus sebelum /:id ──────────────────────────────────
+	// ── 2. CHAT STATIC ───────────────────────────────────────────────────────
 	g.GET("/chat/unread-total", controllers.GetTotalUnreadPenawaranChatCount, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/chat/:chatId", controllers.UpdatePenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// ── 3. DOKUMEN STATIC — harus sebelum /:id ───────────────────────────────
+	// ── 3. DOKUMEN STATIC ────────────────────────────────────────────────────
 	g.POST("/dokumen/upload", controllers.UploadPenawaranDokumen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/dokumen/:dokumenId", controllers.DeletePenawaranDokumen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// ── 4. PERMINTAAN MASUK DOKUMEN ───────────────────────────────────────────
+	// ── 4. PERMINTAAN MASUK ──────────────────────────────────────────────────
 	g.POST("/permintaan-masuk/:id/dokumen", controllers.UploadPenawaranDokumen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/permintaan-masuk/:id/dokumen/:dokumenId", controllers.DeletePenawaranDokumen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// ── 5. DYNAMIC /:id — harus paling bawah ─────────────────────────────────
+	// ── 5. DYNAMIC /:id ──────────────────────────────────────────────────────
 	g.GET("/:id", controllers.GetDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/detail", controllers.UpdateDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/presales", controllers.AssignPreSales, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	g.PATCH("/:id/status", controllers.UpdateStatusPermintaanMasuk, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// ── 6. CHAT DYNAMIC — harus setelah static chat ───────────────────────────
+	// ── 6. CHAT DYNAMIC ──────────────────────────────────────────────────────
 	g.GET("/:id/chat", controllers.GetPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/:id/chat", controllers.KirimPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/chat/read", controllers.ReadPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/:id/chat/unread", controllers.GetUnreadPenawaranChatCount, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/marketing", controllers.AssignMarketing, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	g.GET("/:id/boq", controllers.GetDetailBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	// ── 7. BOQ ───────────────────────────────────────────────────────────────
+	g.GET("/:id/boq", controllers.GetDetailBoQ, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/boq/subtotal", controllers.UpdateSubTotalBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/:id/boq/dokumen", controllers.UploadDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/:id/boq/dokumen/:dokumenId", controllers.DeleteDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/boq/status", controllers.UpdateStatusBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	// ── 8. REVIEW INTERNAL ───────────────────────────────────────────────────
+	g.GET("/:id/review-internal", controllers.GetDetailReviewInternal, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/review-internal/dokumen", controllers.UploadDokumenReviewInternal, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.DELETE("/:id/review-internal/dokumen/:dokumenId", controllers.DeleteDokumenReviewInternal, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/review-internal/status", controllers.UpdateStatusReviewInternal, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	// ── 9. PERSETUJUAN MANAJEMEN ─────────────────────────────────────────────
+	g.GET("/:id/persetujuan-manajemen", controllers.GetDetailPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/persetujuan-manajemen/dokumen", controllers.UploadDokumenPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.DELETE("/:id/persetujuan-manajemen/dokumen/:dokumenId", controllers.DeleteDokumenPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/persetujuan-manajemen/status", controllers.UpdateStatusPersetujuanManajemen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 }

@@ -280,6 +280,7 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		Where("tracking_penawaran_id = ?", trackingID).
 		Preload("TrackingPenawaran.Perusahaan").
 		Preload("Activity").
+		Preload("PreSales").
 		First(&permintaanMasuk).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
 	}
@@ -296,7 +297,6 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		permintaanMasuk.Status = models.StatusPerluTindakan
 		appendLog(&permintaanMasuk, "Tolak", body.Alasan, pegawaiID, namaPegawai)
 		config.DB.Save(&permintaanMasuk)
-
 		config.DB.Model(&models.TrackingPenawaran{}).
 			Where("id = ?", trackingID).
 			Update("status", models.StatusPerluTindakan)
@@ -322,43 +322,20 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 			boqExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingBoQ).Error == nil
 
 			if !boqExists {
-				boq := models.PenyusunanBoQ{
-					ID:                  uuid.New().String(),
-					TrackingPenawaranID: trackingID,
-					PembuatID:           permintaanMasuk.PreSalesID,
-					Status:              models.StatusOnProgress,
-					LogAktivitas: []models.LogBoq{
-						{
-							Aksi:        "BoQ telah dimulai",
-							Keterangan:  "Proses penyusunan BoQ baru saja diinisialisasi.",
-							PegawaiID:   *permintaanMasuk.PreSalesID, // Pastikan di-dereference jika PreSalesID bertipe pointer string (*string)
-							NamaPegawai: *&permintaanMasuk.PreSales.Nama,         // Sesuaikan jika ada variabel nama pegawai yang tersedia di scope fungsi lu
-							CreatedAt:   time.Now(),
-						},
-					},
-					CreatedAt:           time.Now(),
-					UpdatedAt:           time.Now(),
-				}
-				if err := config.DB.Create(&boq).Error; err != nil {
-					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat BoQ."})
-				}
-
-	
-				kategori := models.KategoriBillOfQuantity	
-			
-
 				nomorPO := ""
 				if permintaanMasuk.TrackingPenawaran.NomorPO != nil {
 					nomorPO = *permintaanMasuk.TrackingPenawaran.NomorPO
 				}
 				namaPerusahaan := permintaanMasuk.TrackingPenawaran.Perusahaan.Nama
 
+				// Buat activity dulu, simpan ID-nya
+				activityID := generateActivityID()
 				dailyBoq := models.Activity{
-					ID:            generateActivityID(),
+					ID:            activityID,
 					PegawaiID:     *permintaanMasuk.PreSalesID,
 					TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
 					Perusahaan:    &namaPerusahaan,
-					Kategori:      kategori,
+					Kategori:      models.KategoriBillOfQuantity,
 					Judul:         "Pembuatan BOQ " + namaPerusahaan,
 					Deskripsi:     "Activity otomatis dari penawaran #" + nomorPO,
 					WaktuMulai:    time.Now(),
@@ -368,13 +345,35 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 				if err := config.DB.Create(&dailyBoq).Error; err != nil {
 					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
 				}
+
+				// Baru buat BoQ, link ke activity
+				boq := models.PenyusunanBoQ{
+					ID:                  uuid.New().String(),
+					TrackingPenawaranID: trackingID,
+					PembuatID:           permintaanMasuk.PreSalesID,
+					ActivityID:          &activityID,
+					Status:              models.StatusOnProgress,
+					LogAktivitas: []models.LogBoq{
+						{
+							Aksi:        "BoQ telah dimulai",
+							Keterangan:  "Proses penyusunan BoQ baru saja diinisialisasi.",
+							PegawaiID:   *permintaanMasuk.PreSalesID,
+							NamaPegawai: permintaanMasuk.PreSales.Nama,
+							CreatedAt:   time.Now(),
+						},
+					},
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
+				}
+				if err := config.DB.Create(&boq).Error; err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat BoQ."})
+				}
 			}
 
 		} else {
 			permintaanMasuk.Status = models.StatusKonfirmasiSelesai
 			appendLog(&permintaanMasuk, "Konfirmasi Selesai Diajukan", "Menunggu persetujuan Master", pegawaiID, namaPegawai)
 			config.DB.Save(&permintaanMasuk)
-
 			config.DB.Model(&models.TrackingPenawaran{}).
 				Where("id = ?", trackingID).
 				Update("status", models.StatusKonfirmasiSelesai)

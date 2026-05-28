@@ -55,6 +55,22 @@ type LogBoq struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
+type LogReviewInternal struct {
+    Aksi        string    `json:"aksi"`
+    Keterangan  string    `json:"keterangan"`
+    PegawaiID   string    `json:"pegawaiId"`
+    NamaPegawai string    `json:"namaPegawai"`
+    CreatedAt   time.Time `json:"createdAt"`
+}
+
+type LogPersetujuanManajemen struct {
+    Aksi        string    `json:"aksi"`
+    Keterangan  string    `json:"keterangan"`
+    PegawaiID   string    `json:"pegawaiId"`
+    NamaPegawai string    `json:"namaPegawai"`
+    CreatedAt   time.Time `json:"createdAt"`
+}
+
 // ─── Tracking Penawaran (Master) ──────────────────────────────────────────────
 
 type TrackingPenawaran struct {
@@ -124,28 +140,28 @@ type PenyusunanBoQ struct {
 // ─── Step 3: Review Internal ──────────────────────────────────────────────────
 
 type ReviewInternal struct {
-	ID                  string            `gorm:"primaryKey"                                    json:"id"`
-	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                    json:"trackingPenawaranId"`
-	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID"  json:"trackingPenawaran,omitempty"`
-	AccAdminDirektur    bool              `gorm:"not null;default:false"                        json:"accAdminDirektur"`
-	AccManajerOps       bool              `gorm:"not null;default:false"                        json:"accManajerOps"`
-	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"            json:"status"`
-	Dokumen             []PenawaranDokumen `gorm:"foreignKey:ReviewInternalID"                  json:"dokumen,omitempty"`
-	CreatedAt           time.Time         `gorm:"index"                                         json:"createdAt"`
-	UpdatedAt           time.Time         `                                                      json:"updatedAt"`
+    ID                  string                 `gorm:"primaryKey"                                   json:"id"`
+    TrackingPenawaranID string                 `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+    TrackingPenawaran   TrackingPenawaran      `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+    AccAdminDirektur    bool                   `gorm:"not null;default:false"                       json:"accAdminDirektur"`
+    AccManajerOps       bool                   `gorm:"not null;default:false"                       json:"accManajerOps"`
+    Status              StatusActivity         `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+    LogAktivitas        []LogReviewInternal    `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+    Dokumen             []PenawaranDokumen     `gorm:"foreignKey:ReviewInternalID"                  json:"dokumen,omitempty"`
+    CreatedAt           time.Time              `gorm:"index"                                        json:"createdAt"`
+    UpdatedAt           time.Time              `                                                     json:"updatedAt"`
 }
 
-// ─── Step 4: Persetujuan Manajemen ────────────────────────────────────────────
-
 type PersetujuanManajemen struct {
-	ID                  string            `gorm:"primaryKey"                                    json:"id"`
-	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                    json:"trackingPenawaranId"`
-	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID"  json:"trackingPenawaran,omitempty"`
-	AccDirekturUtama    bool              `gorm:"not null;default:false"                        json:"accDirekturUtama"`
-	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"            json:"status"`
-	Dokumen             []PenawaranDokumen `gorm:"foreignKey:PersetujuanManajemenID"            json:"dokumen,omitempty"`
-	CreatedAt           time.Time         `gorm:"index"                                         json:"createdAt"`
-	UpdatedAt           time.Time         `                                                      json:"updatedAt"`
+    ID                  string                     `gorm:"primaryKey"                                   json:"id"`
+    TrackingPenawaranID string                     `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+    TrackingPenawaran   TrackingPenawaran          `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+    AccDirekturKomisaris bool                      `gorm:"not null;default:false"                       json:"accDirekturKomisaris"`
+    Status              StatusActivity             `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+    LogAktivitas        []LogPersetujuanManajemen  `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+    Dokumen             []PenawaranDokumen         `gorm:"foreignKey:PersetujuanManajemenID"            json:"dokumen,omitempty"`
+    CreatedAt           time.Time                  `gorm:"index"                                        json:"createdAt"`
+    UpdatedAt           time.Time                  `                                                     json:"updatedAt"`
 }
 
 // ─── Dokumen ──────────────────────────────────────────────────────────────────
@@ -161,6 +177,7 @@ type PenawaranDokumen struct {
 	PenyusunanBoQID        *string   `gorm:"index" json:"penyusunanBoQId,omitempty"`
 	ReviewInternalID       *string   `gorm:"index" json:"reviewInternalId,omitempty"`
 	PersetujuanManajemenID *string   `gorm:"index" json:"persetujuanManajemenId,omitempty"`
+	
 
 	ActivityID             *string   `gorm:"index" json:"activityId,omitempty"`
 	Activity               *Activity `gorm:"foreignKey:ActivityID;references:ID" json:"activity,omitempty"`
@@ -179,6 +196,7 @@ type PenawaranChat struct {
 	ReadBy              []string  `gorm:"serializer:json;default:'[]'"       json:"readBy"`
 	CreatedAt           time.Time `gorm:"index"                              json:"createdAt"`
 }
+
 
 // ─── Table Names ──────────────────────────────────────────────────────────────
 
