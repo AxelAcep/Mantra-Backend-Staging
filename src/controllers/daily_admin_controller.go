@@ -317,7 +317,9 @@ func MasterGetActivitySemua(c echo.Context) error {
 
 // GET /master/stats
 func MasterGetStats(c echo.Context) error {
-	var totalAktivitas, perluKonfirmasi, pengajuanReschedule, overdue int64
+	var totalAktivitas, perluKonfirmasi, pengajuanReschedule, overdue, totalKaryawan, karyawanOverdue int64
+
+	config.DB.Model(&models.Pegawai{}).Where("deleted_at IS NULL").Count(&totalKaryawan)
 
 	config.DB.Model(&models.Activity{}).
 		Count(&totalAktivitas)
@@ -334,11 +336,18 @@ func MasterGetStats(c echo.Context) error {
 		Where("status = ? AND target_selesai < ?", models.StatusOnProgress, time.Now()).
 		Count(&overdue)
 
+	config.DB.Model(&models.Activity{}).
+		Where("status = ? AND target_selesai < ?", models.StatusOnProgress, time.Now()).
+		Distinct("pegawai_id").
+		Count(&karyawanOverdue)
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"totalAktivitas":         totalAktivitas,
 		"perluKonfirmasiSelesai": perluKonfirmasi,
 		"pengajuanReschedule":    pengajuanReschedule,
 		"overdue":                overdue,
+		"totalKaryawan":          totalKaryawan,
+		"karyawanOverdue":        karyawanOverdue,
 	})
 }
 
@@ -397,6 +406,8 @@ func MasterGetKaryawan(c echo.Context) error {
 	query := config.DB.Table(`"Pegawai" p`).
 		Select(`p.id, p.nama, p.divisi,
             (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id AND a.status = 'ON_PROGRESS') as berjalan_count,
+            (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id AND a.status = 'ON_PROGRESS' AND a.target_selesai < NOW()) as overdue_count,
+            (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id AND a.status = 'DITERIMA') as completed_count,
             (SELECT count(*) FROM "Activity" a WHERE a.pegawai_id = p.id) as total_count`).
 		Where("p.deleted_at IS NULL")
 
@@ -426,11 +437,13 @@ func MasterGetKaryawan(c echo.Context) error {
 
 	// ── 4. Fetch Paginated ────────────────────────────────────────────────────
 	type RawRow struct {
-		ID            string
-		Nama          string
-		Divisi        string
-		BerjalanCount int64
-		TotalCount    int64
+		ID             string
+		Nama           string
+		Divisi         string
+		BerjalanCount  int64
+		OverdueCount   int64
+		CompletedCount int64
+		TotalCount     int64
 	}
 
 	var rawRows []RawRow
@@ -484,6 +497,8 @@ func MasterGetKaryawan(c echo.Context) error {
 		Cukup             int    `json:"cukup"`
 		Buruk             int    `json:"buruk"`
 		AktivitasBerjalan int64  `json:"aktivitasBerjalan"`
+		OverdueCount      int64  `json:"overdueCount"`
+		CompletedCount    int64  `json:"completedCount"`
 		TotalAktivitas    int64  `json:"totalAktivitas"`
 	}
 
@@ -498,6 +513,8 @@ func MasterGetKaryawan(c echo.Context) error {
 			Cukup:             kpi.Cukup,
 			Buruk:             kpi.Buruk,
 			AktivitasBerjalan: r.BerjalanCount,
+			OverdueCount:      r.OverdueCount,
+			CompletedCount:    r.CompletedCount,
 			TotalAktivitas:    r.TotalCount,
 		}
 	}

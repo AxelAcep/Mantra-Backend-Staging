@@ -196,8 +196,13 @@ type Notifikasi struct {
 }
 
 type Perusahaan struct {
-	ID   string `gorm:"primaryKey" json:"id"`
-	Nama string `gorm:"not null" json:"nama"`
+	ID           string         `gorm:"primaryKey" json:"id"`
+	Nama         string         `gorm:"not null" json:"nama"`
+	Alamat       *string        `json:"alamat"`
+	NomorTelepon *string        `gorm:"column:nomor_telepon" json:"nomor_telepon"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	UpdatedAt    time.Time      `json:"updatedAt"`
 }
 
 func (Pegawai) TableName() string             { return "Pegawai" }
