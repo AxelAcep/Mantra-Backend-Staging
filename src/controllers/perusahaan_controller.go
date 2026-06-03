@@ -122,3 +122,19 @@ func UpdatePerusahaan(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, company)
 }
+
+// DELETE /perusahaan/:id - Delete existing company
+func DeletePerusahaan(c echo.Context) error {
+	id := c.Param("id")
+	var company models.Perusahaan
+	if err := config.DB.First(&company, "id = ?", id).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Perusahaan tidak ditemukan."})
+	}
+
+	if err := config.DB.Delete(&company).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghapus data perusahaan di database."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "Perusahaan berhasil dihapus."})
+}
+
