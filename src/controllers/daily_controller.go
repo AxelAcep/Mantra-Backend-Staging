@@ -1670,14 +1670,29 @@ func UpdateActivity(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
-	// Update fields
-	activity.TerkaitPO = req.TerkaitPO
-	activity.Perusahaan = req.Perusahaan
-	activity.Kategori = models.KategoriActivity(req.Kategori)
-	activity.Judul = req.Judul
-	activity.Deskripsi = req.Deskripsi
+	// Update fields & sync children in transaction
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+		activity.TerkaitPO = req.TerkaitPO
+		activity.Perusahaan = req.Perusahaan
+		activity.Kategori = models.KategoriActivity(req.Kategori)
+		activity.Judul = req.Judul
+		activity.Deskripsi = req.Deskripsi
 
-	if err := config.DB.Save(&activity).Error; err != nil {
+		if err := tx.Save(&activity).Error; err != nil {
+			return err
+		}
+
+		// Update perusahaan for all children of this parent activity
+		if err := tx.Model(&models.Activity{}).
+			Where("parent_id = ?", activity.ID).
+			Update("perusahaan", req.Perusahaan).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
 	}
 
