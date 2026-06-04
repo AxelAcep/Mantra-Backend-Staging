@@ -1670,6 +1670,22 @@ func UpdateActivity(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
+	// Validasi: Child activity tidak boleh mengubah data Perusahaan secara mandiri
+	if activity.ParentID != nil {
+		isDifferent := false
+		if req.Perusahaan == nil && activity.Perusahaan != nil {
+			isDifferent = true
+		} else if req.Perusahaan != nil && activity.Perusahaan == nil {
+			isDifferent = true
+		} else if req.Perusahaan != nil && activity.Perusahaan != nil && *req.Perusahaan != *activity.Perusahaan {
+			isDifferent = true
+		}
+
+		if isDifferent {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tidak dapat mengubah data perusahaan pada aktivitas kolaborasi (child activity)."})
+		}
+	}
+
 	// Update fields & sync children in transaction
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		activity.TerkaitPO = req.TerkaitPO
