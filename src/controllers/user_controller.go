@@ -9,6 +9,7 @@ import (
 	"net/smtp"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"mantra/src/config"
@@ -101,12 +102,14 @@ func Register(c echo.Context) error {
 			return err
 		}
 
+		activeStatus := true
 		user = models.User{
-			ID:        generateID("user"),
-			Email:     req.Email,
-			Password:  string(hashedPassword),
-			Role:      models.Role(req.Role),
-			PegawaiID: pegawai.ID,
+			ID:           generateID("user"),
+			Email:        req.Email,
+			Password:     string(hashedPassword),
+			Role:         models.Role(req.Role),
+			PegawaiID:    pegawai.ID,
+			ActiveStatus: &activeStatus,
 		}
 		return tx.Create(&user).Error
 	})
@@ -157,6 +160,10 @@ func Login(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Email atau password salah."})
 	}
 
+	if user.ActiveStatus == nil || !*user.ActiveStatus {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Akun Anda dinonaktifkan. Silakan hubungi admin."})
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Email atau password salah."})
 	}
@@ -190,7 +197,7 @@ func Login(c echo.Context) error {
 			"id":       user.ID,
 			"email":    user.Email,
 			"role":     user.Role,
-			"isActive": true,
+			"isActive": user.ActiveStatus != nil && *user.ActiveStatus,
 			"pegawai": map[string]interface{}{
 				"id":     user.Pegawai.ID,
 				"nama":   user.Pegawai.Nama,
@@ -220,6 +227,9 @@ func GetAllUsers(c echo.Context) error {
 	}
 
 	search := c.QueryParam("search")
+	status := c.QueryParam("status")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.User{}).Joins("JOIN \"Pegawai\" ON \"Pegawai\".id = \"User\".pegawai_id")
@@ -229,12 +239,49 @@ func GetAllUsers(c echo.Context) error {
 		query = query.Where("\"Pegawai\".nama ILIKE ? OR \"User\".email ILIKE ?", like, like)
 	}
 
+	if status == "aktif" {
+		query = query.Where("\"User\".active_status = ?", true)
+	} else if status == "nonaktif" {
+		query = query.Where("\"User\".active_status = ? OR \"User\".active_status IS NULL", false)
+	}
+
+	orderClause := "\"Pegawai\".nama ASC"
+	validSortDir := "ASC"
+	if strings.ToUpper(sortDir) == "DESC" {
+		validSortDir = "DESC"
+	}
+
+	switch strings.ToLower(sortBy) {
+	case "karyawan", "nama":
+		orderClause = "\"Pegawai\".nama " + validSortDir
+	case "divisi":
+		orderClause = "\"Pegawai\".divisi " + validSortDir
+	case "email":
+		orderClause = "\"User\".email " + validSortDir
+	case "role":
+		orderClause = "\"User\".role " + validSortDir
+	case "status":
+		orderClause = "\"User\".active_status " + validSortDir
+	case "lastlogin", "last_login", "aktivitas_terakhir":
+		orderClause = "\"User\".last_login " + validSortDir
+	}
+
+	query = query.Order(orderClause)
+
 	var total int64
 	query.Count(&total)
 
 	var users []models.User
 	if err := query.Preload("Pegawai").Limit(limit).Offset(offset).Find(&users).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
+	}
+
+	for i := range users {
+		var count int64
+		config.DB.Model(&models.Activity{}).
+			Where("pegawai_id = ? AND status NOT IN ?", users[i].PegawaiID, []string{string(models.StatusDiterima), string(models.StatusDibatalkan)}).
+			Count(&count)
+		users[i].BerjalanCount = count
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -262,6 +309,12 @@ func GetOneUser(c echo.Context) error {
 	if err := config.DB.Preload("Pegawai").Where("id = ?", id).First(&user).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "User tidak ditemukan."})
 	}
+
+	var count int64
+	config.DB.Model(&models.Activity{}).
+		Where("pegawai_id = ? AND status NOT IN ?", user.PegawaiID, []string{string(models.StatusDiterima), string(models.StatusDibatalkan)}).
+		Count(&count)
+	user.BerjalanCount = count
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Data user berhasil diambil.",
@@ -295,7 +348,7 @@ func GetMe(c echo.Context) error {
 			"id":       user.ID,
 			"email":    user.Email,
 			"role":     user.Role,
-			"isActive": true,
+			"isActive": user.ActiveStatus != nil && *user.ActiveStatus,
 			"pegawai": map[string]interface{}{
 				"id":     user.Pegawai.ID,
 				"nama":   user.Pegawai.Nama,
@@ -310,11 +363,13 @@ func GetMe(c echo.Context) error {
 // ==========================================
 
 type EditUserRequest struct {
-	Nama     string `json:"nama"`
-	Email    string `json:"email"`
-	Role     string `json:"role"`
-	Divisi   string `json:"divisi"`
-	Password string `json:"password"`
+	Nama              string `json:"nama"`
+	Email             string `json:"email"`
+	Role              string `json:"role"`
+	Divisi            string `json:"divisi"`
+	Password          string `json:"password"`
+	ActiveStatus      *bool  `json:"activeStatus"`
+	TransferPegawaiID string `json:"transferPegawaiId"`
 }
 
 func EditUser(c echo.Context) error {
@@ -328,6 +383,12 @@ func EditUser(c echo.Context) error {
 	var user models.User
 	if err := config.DB.Preload("Pegawai").Where("id = ?", id).First(&user).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "User tidak ditemukan."})
+	}
+
+	if req.ActiveStatus != nil {
+		if (user.ActiveStatus == nil || !*user.ActiveStatus) && *req.ActiveStatus {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Akun yang sudah nonaktif tidak dapat diaktifkan kembali."})
+		}
 	}
 
 	if req.Password != "" {
@@ -354,6 +415,18 @@ func EditUser(c echo.Context) error {
 		}
 		if req.Role != "" {
 			user.Role = models.Role(req.Role)
+		}
+		if req.ActiveStatus != nil {
+			user.ActiveStatus = req.ActiveStatus
+			if !*req.ActiveStatus && req.TransferPegawaiID != "" {
+				err := tx.Model(&models.Activity{}).
+					Where("pegawai_id = ? AND status NOT IN ?", user.PegawaiID, []string{string(models.StatusDiterima), string(models.StatusDibatalkan)}).
+					Update("pegawai_id", req.TransferPegawaiID).
+					Error
+				if err != nil {
+					return err
+				}
+			}
 		}
 		return tx.Save(&user).Error
 	})

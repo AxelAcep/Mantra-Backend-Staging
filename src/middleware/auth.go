@@ -6,6 +6,9 @@ import (
     "os"
     "strings"
 
+    "mantra/src/config"
+    "mantra/src/models"
+
     "github.com/golang-jwt/jwt/v5"
     "github.com/labstack/echo/v4"
 )
@@ -69,6 +72,22 @@ func VerifyToken(next echo.HandlerFunc) echo.HandlerFunc {
             return c.JSON(http.StatusForbidden, map[string]string{
                 "error": "Token tidak valid.",
             })
+        }
+
+        // Verifikasi active_status dari database secara real-time
+        userID, _ := claims["id"].(string)
+        if userID != "" {
+            var activeStatus *bool
+            err := config.DB.Model(&models.User{}).
+                Where("id = ?", userID).
+                Select("active_status").
+                Row().
+                Scan(&activeStatus)
+            if err != nil || activeStatus == nil || !*activeStatus {
+                return c.JSON(http.StatusUnauthorized, map[string]string{
+                    "error": "Akun Anda dinonaktifkan. Silakan hubungi admin.",
+                })
+            }
         }
 
         c.Set("user", claims)

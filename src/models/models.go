@@ -108,6 +108,8 @@ type User struct {
 	UpdatedAt    time.Time  `json:"updatedAt"`
 	ResetToken   string     `json:"-"`
 	TokenExpires *time.Time `json:"-"`
+	ActiveStatus *bool      `gorm:"column:active_status;default:true" json:"activeStatus"`
+	BerjalanCount int64     `gorm:"-" json:"berjalanCount"`
 }
 
 type Activity struct {
