@@ -684,33 +684,63 @@ func GetKPIOverview(c echo.Context) error {
 		Cukup int `json:"cukup"`
 		Buruk int `json:"buruk"`
 	}
-	config.DB.Table("KPIPegawai").
+	kpiQuery := config.DB.Table("KPIPegawai").
 		Select("COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
-		Where("pegawai_id = ? AND tahun = ?", pegawaiID, tahun).
-		Where("bulan = ?", bulan).
-		Scan(&kpiSummary)
+		Where("pegawai_id = ? AND tahun = ?", pegawaiID, tahun)
+	if bulan > 0 {
+		kpiQuery = kpiQuery.Where("bulan = ?", bulan)
+	}
+	kpiQuery.Scan(&kpiSummary)
 
-	// ── 3. Tren Kualitas Mingguan ────────────────────────────────────────────
+	// ── 3. Tren Kualitas Mingguan / Bulanan ──────────────────────────────────
 	var weeklyTrends []struct {
 		Minggu int `json:"minggu"`
 		Baik   int `json:"baik"`
 		Cukup  int `json:"cukup"`
 		Buruk  int `json:"buruk"`
 	}
-	config.DB.Table("KPIPegawai").
-		Select("minggu, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
-		Where("pegawai_id = ? AND tahun = ? AND bulan = ?", pegawaiID, tahun, bulan).
-		Group("minggu").
-		Order("minggu ASC").
-		Scan(&weeklyTrends)
+	if bulan == 0 {
+		// Mode Tahun: Group by bulan (as minggu for type compatibility)
+		config.DB.Table("KPIPegawai").
+			Select("bulan AS minggu, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
+			Where("pegawai_id = ? AND tahun = ?", pegawaiID, tahun).
+			Group("bulan").
+			Order("bulan ASC").
+			Scan(&weeklyTrends)
+	} else {
+		// Mode Bulan: Group by minggu
+		config.DB.Table("KPIPegawai").
+			Select("minggu, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
+			Where("pegawai_id = ? AND tahun = ? AND bulan = ?", pegawaiID, tahun, bulan).
+			Group("minggu").
+			Order("minggu ASC").
+			Scan(&weeklyTrends)
+	}
 
 	// ── 4. Riwayat Aktivitasssssss ────────────────────────────────────────────────
 	tab := c.QueryParam("tab")
 	if tab == "" {
 		tab = "aktivitas"
 	}
+	search := c.QueryParam("search")
+	status := c.QueryParam("status")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
 
 	activityQuery := config.DB.Model(&models.Activity{}).Where("pegawai_id = ?", pegawaiID)
+
+	// Apply period (month/year) filter on activities
+	if tahun > 0 {
+		if bulan > 0 {
+			startDate := time.Date(tahun, time.Month(bulan), 1, 0, 0, 0, 0, time.UTC)
+			endDate := startDate.AddDate(0, 1, 0)
+			activityQuery = activityQuery.Where(`"Activity"."target_selesai" >= ? AND "Activity"."target_selesai" < ?`, startDate, endDate)
+		} else {
+			startDate := time.Date(tahun, 1, 1, 0, 0, 0, 0, time.UTC)
+			endDate := startDate.AddDate(1, 0, 0)
+			activityQuery = activityQuery.Where(`"Activity"."target_selesai" >= ? AND "Activity"."target_selesai" < ?`, startDate, endDate)
+		}
+	}
 
 	if tab == "riwayat" {
 		activityQuery = activityQuery.Where("status = ?", models.StatusDiterima)
@@ -718,15 +748,69 @@ func GetKPIOverview(c echo.Context) error {
 		activityQuery = activityQuery.Where("status != ?", models.StatusDiterima)
 	}
 
+	// Apply search filter
+	if search != "" {
+		like := "%" + search + "%"
+		activityQuery = activityQuery.Where(
+			`("Activity"."judul" ILIKE ? OR "Activity"."deskripsi" ILIKE ? OR "Activity"."perusahaan" ILIKE ? OR "Activity"."terkait_po" ILIKE ?)`,
+			like, like, like, like,
+		)
+	}
+
+	// Apply status/rating filter
+	if status != "" {
+		if tab == "riwayat" && (status == "BAIK" || status == "CUKUP" || status == "BURUK") {
+			activityQuery = activityQuery.Where(`"Activity"."nilai_kpi" = ?`, status)
+		} else {
+			if status == "OVERDUE" {
+				activityQuery = activityQuery.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" < ?`, models.StatusOnProgress, time.Now())
+			} else if status == string(models.StatusOnProgress) {
+				activityQuery = activityQuery.Where(`"Activity"."status" = ? AND "Activity"."target_selesai" >= ?`, models.StatusOnProgress, time.Now())
+			} else {
+				activityQuery = activityQuery.Where(`"Activity"."status" = ?`, status)
+			}
+		}
+	}
+
+	// Apply sorting
+	orderClause := `"Activity"."updated_at" DESC`
+	validSortDir := "DESC"
+	if strings.ToUpper(sortDir) == "ASC" {
+		validSortDir = "ASC"
+	}
+	switch strings.ToLower(sortBy) {
+	case "kategori":
+		orderClause = `"Activity"."kategori" ` + validSortDir
+	case "judul":
+		orderClause = `"Activity"."judul" ` + validSortDir
+	case "terkait_po", "nomorreferensi":
+		orderClause = `"Activity"."terkait_po" ` + validSortDir
+	case "perusahaan":
+		orderClause = `"Activity"."perusahaan" ` + validSortDir
+	case "status":
+		orderClause = `"Activity"."status" ` + validSortDir
+	case "tanggal", "targetselesai":
+		orderClause = `"Activity"."target_selesai" ` + validSortDir
+	case "penilaian", "nilaikpi":
+		orderClause = `"Activity"."nilai_kpi" ` + validSortDir
+	}
+
 	var total int64
 	activityQuery.Count(&total)
 
 	var activities []models.Activity
 	activityQuery.Preload("Pegawai").
-		Order("updated_at DESC").
+		Order(orderClause).
 		Offset(offset).
 		Limit(limit).
 		Find(&activities)
+
+	nowTime := time.Now()
+	for i := range activities {
+		if activities[i].Status == models.StatusOnProgress && nowTime.After(activities[i].TargetSelesai) {
+			activities[i].Status = "OVERDUE"
+		}
+	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
 

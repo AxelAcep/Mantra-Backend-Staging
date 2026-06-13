@@ -556,6 +556,11 @@ func PengajuanReschedule(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Activity tidak ditemukan."})
 	}
 
+	// Cek apakah status activity sudah selesai atau batal
+	if activity.Status == models.StatusDiterima || activity.Status == models.StatusSelesai || activity.Status == models.StatusDibatalkan {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Aktivitas sudah selesai atau dibatalkan, tidak bisa mengajukan reschedule."})
+	}
+
 	// Cek tidak ada reschedule pending
 	var existingReschedule models.ActivityReschedule
 	if err := config.DB.Where("activity_id = ? AND status = ?", activityID, models.StatusReschedulePending).First(&existingReschedule).Error; err == nil {
@@ -668,6 +673,11 @@ func KonfirmasiReschedule(c echo.Context) error {
 			return err
 		}
 
+		// Cek apakah status activity sudah selesai atau batal
+		if activity.Status == models.StatusDiterima || activity.Status == models.StatusSelesai || activity.Status == models.StatusDibatalkan {
+			return fmt.Errorf("aktivitas sudah selesai atau dibatalkan, tidak bisa menyetujui reschedule")
+		}
+
 		// ===== UPDATE RESCHEDULE =====
 		reschedule.Status = models.StatusReschedule(req.Status)
 		if req.Status == string(models.StatusRescheduleDitolak) {
@@ -745,6 +755,9 @@ func KonfirmasiReschedule(c echo.Context) error {
 	})
 
 	if err != nil {
+		if err.Error() == "aktivitas sudah selesai atau dibatalkan, tidak bisa menyetujui reschedule" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "Terjadi kesalahan pada server.",
 		})
@@ -890,6 +903,13 @@ func KonfirmasiSelesai(c echo.Context) error {
 			if err := tx.Model(&models.ActivityKolaborator{}).
 				Where("child_activity_id = ?", activityID).
 				Update("status", models.StatusDiterima).Error; err != nil {
+				return err
+			}
+
+			// Batalkan pengajuan reschedule yang masih pending untuk aktivitas ini
+			if err := tx.Model(&models.ActivityReschedule{}).
+				Where("activity_id = ? AND status = ?", activityID, models.StatusReschedulePending).
+				Update("status", models.StatusRescheduleDitolak).Error; err != nil {
 				return err
 			}
 
