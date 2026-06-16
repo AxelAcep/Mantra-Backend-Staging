@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -24,6 +25,12 @@ type ActivityWithOverdue struct {
 }
 
 func paginateMasterActivity(c echo.Context, query *gorm.DB, pageSize int) error {
+	limitStr := c.QueryParam("limit")
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			pageSize = l
+		}
+	}
 	pageStr := c.QueryParam("page")
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -75,6 +82,12 @@ func paginateMasterActivity(c echo.Context, query *gorm.DB, pageSize int) error 
 // ==========================================
 
 func paginateMasterReschedule(c echo.Context, query *gorm.DB, pageSize int) error {
+	limitStr := c.QueryParam("limit")
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			pageSize = l
+		}
+	}
 	pageStr := c.QueryParam("page")
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -660,8 +673,11 @@ func GetKPIOverview(c echo.Context) error {
 
 	// Default bulan dan tahun
 	now := time.Now()
-	bulan := queryInt(c, "bulan", int(now.Month()))
-	tahun := queryInt(c, "tahun", now.Year())
+	filterType := c.QueryParam("filterType") // "semua" or "range"
+	startBulan := queryInt(c, "startBulan", int(now.Month()))
+	startTahun := queryInt(c, "startTahun", now.Year())
+	endBulan := queryInt(c, "endBulan", int(now.Month()))
+	endTahun := queryInt(c, "endTahun", now.Year())
 
 	offset := (page - 1) * limit
 
@@ -686,35 +702,89 @@ func GetKPIOverview(c echo.Context) error {
 	}
 	kpiQuery := config.DB.Table("KPIPegawai").
 		Select("COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
-		Where("pegawai_id = ? AND tahun = ?", pegawaiID, tahun)
-	if bulan > 0 {
-		kpiQuery = kpiQuery.Where("bulan = ?", bulan)
+		Where("pegawai_id = ?", pegawaiID)
+
+	if filterType == "range" {
+		kpiQuery = kpiQuery.Where(`(tahun > ? OR (tahun = ? AND bulan >= ?)) AND (tahun < ? OR (tahun = ? AND bulan <= ?))`,
+			startTahun, startTahun, startBulan, endTahun, endTahun, endBulan)
 	}
 	kpiQuery.Scan(&kpiSummary)
 
 	// ── 3. Tren Kualitas Mingguan / Bulanan ──────────────────────────────────
-	var weeklyTrends []struct {
-		Minggu int `json:"minggu"`
-		Baik   int `json:"baik"`
-		Cukup  int `json:"cukup"`
-		Buruk  int `json:"buruk"`
+	type TrendPoint struct {
+		Label string `json:"label"`
+		Baik  int    `json:"baik"`
+		Cukup int    `json:"cukup"`
+		Buruk int    `json:"buruk"`
 	}
-	if bulan == 0 {
-		// Mode Tahun: Group by bulan (as minggu for type compatibility)
-		config.DB.Table("KPIPegawai").
-			Select("bulan AS minggu, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
-			Where("pegawai_id = ? AND tahun = ?", pegawaiID, tahun).
-			Group("bulan").
-			Order("bulan ASC").
-			Scan(&weeklyTrends)
-	} else {
+	var weeklyTrends []TrendPoint
+
+	diffMonths := 12 // default to multi-month behavior if "semua"
+	if filterType == "range" {
+		diffMonths = (endTahun-startTahun)*12 + (endBulan - startBulan) + 1
+	}
+
+	if filterType == "range" && diffMonths == 1 {
 		// Mode Bulan: Group by minggu
+		var rawTrends []struct {
+			Minggu int
+			Baik   int
+			Cukup  int
+			Buruk  int
+		}
 		config.DB.Table("KPIPegawai").
 			Select("minggu, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
-			Where("pegawai_id = ? AND tahun = ? AND bulan = ?", pegawaiID, tahun, bulan).
+			Where("pegawai_id = ? AND tahun = ? AND bulan = ?", pegawaiID, startTahun, startBulan).
 			Group("minggu").
 			Order("minggu ASC").
-			Scan(&weeklyTrends)
+			Scan(&rawTrends)
+
+		weeklyTrends = make([]TrendPoint, len(rawTrends))
+		for i, rt := range rawTrends {
+			weeklyTrends[i] = TrendPoint{
+				Label: fmt.Sprintf("Minggu %d", rt.Minggu),
+				Baik:  rt.Baik,
+				Cukup: rt.Cukup,
+				Buruk: rt.Buruk,
+			}
+		}
+	} else {
+		// Mode Tahun/Semua: Group by tahun, bulan
+		var rawTrends []struct {
+			Tahun int
+			Bulan int
+			Baik  int
+			Cukup int
+			Buruk int
+		}
+		tQuery := config.DB.Table("KPIPegawai").
+			Select("tahun, bulan, COALESCE(SUM(baik), 0) AS baik, COALESCE(SUM(cukup), 0) AS cukup, COALESCE(SUM(buruk), 0) AS buruk").
+			Where("pegawai_id = ?", pegawaiID)
+
+		if filterType == "range" {
+			tQuery = tQuery.Where(`(tahun > ? OR (tahun = ? AND bulan >= ?)) AND (tahun < ? OR (tahun = ? AND bulan <= ?))`,
+				startTahun, startTahun, startBulan, endTahun, endTahun, endBulan)
+		}
+		tQuery.Group("tahun, bulan").
+			Order("tahun ASC, bulan ASC").
+			Scan(&rawTrends)
+
+		weeklyTrends = make([]TrendPoint, len(rawTrends))
+		monthsAbbr := []string{"", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agt", "Sep", "Okt", "Nov", "Des"}
+		for i, rt := range rawTrends {
+			lbl := ""
+			if rt.Bulan >= 1 && rt.Bulan <= 12 {
+				lbl = fmt.Sprintf("%s %02d", monthsAbbr[rt.Bulan], rt.Tahun%100)
+			} else {
+				lbl = fmt.Sprintf("%d", rt.Tahun)
+			}
+			weeklyTrends[i] = TrendPoint{
+				Label: lbl,
+				Baik:  rt.Baik,
+				Cukup: rt.Cukup,
+				Buruk: rt.Buruk,
+			}
+		}
 	}
 
 	// ── 4. Riwayat Aktivitasssssss ────────────────────────────────────────────────
@@ -728,19 +798,6 @@ func GetKPIOverview(c echo.Context) error {
 	sortDir := c.QueryParam("sortDir")
 
 	activityQuery := config.DB.Model(&models.Activity{}).Where("pegawai_id = ?", pegawaiID)
-
-	// Apply period (month/year) filter on activities
-	if tahun > 0 {
-		if bulan > 0 {
-			startDate := time.Date(tahun, time.Month(bulan), 1, 0, 0, 0, 0, time.UTC)
-			endDate := startDate.AddDate(0, 1, 0)
-			activityQuery = activityQuery.Where(`"Activity"."target_selesai" >= ? AND "Activity"."target_selesai" < ?`, startDate, endDate)
-		} else {
-			startDate := time.Date(tahun, 1, 1, 0, 0, 0, 0, time.UTC)
-			endDate := startDate.AddDate(1, 0, 0)
-			activityQuery = activityQuery.Where(`"Activity"."target_selesai" >= ? AND "Activity"."target_selesai" < ?`, startDate, endDate)
-		}
-	}
 
 	if tab == "riwayat" {
 		activityQuery = activityQuery.Where("status = ?", models.StatusDiterima)

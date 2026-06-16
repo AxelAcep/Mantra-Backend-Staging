@@ -185,10 +185,24 @@ func GetAllKPIBulan(c echo.Context) error {
 // GET /kpi/yearly?tahun=2026&bulanAwal=1&bulanAkhir=12
 
 func GetAllKPIYearly(c echo.Context) error {
-	_, tahun := currentBulanTahun()
-	tahun = queryInt(c, "tahun", tahun)
-	bulanAwal := queryInt(c, "bulanAwal", 1)
-	bulanAkhir := queryInt(c, "bulanAkhir", 12)
+	defaultBulan, defaultTahun := currentBulanTahun()
+	tahunStr := c.QueryParam("tahun")
+
+	var startBulan, startTahun, endBulan, endTahun int
+	if tahunStr != "" {
+		tahun := queryInt(c, "tahun", defaultTahun)
+		bulanAwal := queryInt(c, "bulanAwal", 1)
+		bulanAkhir := queryInt(c, "bulanAkhir", 12)
+		startBulan = bulanAwal
+		startTahun = tahun
+		endBulan = bulanAkhir
+		endTahun = tahun
+	} else {
+		startBulan = queryInt(c, "startBulan", defaultBulan)
+		startTahun = queryInt(c, "startTahun", defaultTahun)
+		endBulan = queryInt(c, "endBulan", defaultBulan)
+		endTahun = queryInt(c, "endTahun", defaultTahun)
+	}
 
 	var results []KPIResponse
 	config.DB.Table(`"KPIPegawai"`).
@@ -201,15 +215,17 @@ func GetAllKPIYearly(c echo.Context) error {
             SUM("KPIPegawai".buruk) AS buruk
         `).
 		Joins(`JOIN "Pegawai" ON "Pegawai".id = "KPIPegawai".pegawai_id`).
-		Where(`"KPIPegawai".tahun = ? AND "KPIPegawai".bulan BETWEEN ? AND ?`, tahun, bulanAwal, bulanAkhir).
+		Where(`("KPIPegawai".tahun > ? OR ("KPIPegawai".tahun = ? AND "KPIPegawai".bulan >= ?)) AND ("KPIPegawai".tahun < ? OR ("KPIPegawai".tahun = ? AND "KPIPegawai".bulan <= ?))`,
+			startTahun, startTahun, startBulan, endTahun, endTahun, endBulan).
 		Group(`"KPIPegawai".pegawai_id, "Pegawai".nama, "Pegawai".divisi`).
 		Order("baik DESC").
 		Scan(&results)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"tahun":      tahun,
-		"bulanAwal":  bulanAwal,
-		"bulanAkhir": bulanAkhir,
+		"startBulan": startBulan,
+		"startTahun": startTahun,
+		"endBulan":   endBulan,
+		"endTahun":   endTahun,
 		"data":       results,
 	})
 }
@@ -285,9 +301,8 @@ func GetKPIPegawaiYearly(c echo.Context) error {
 // GET /kpi/distribusi?bulan=3&tahun=2026
 
 func GetDistribusiKPIBulan(c echo.Context) error {
-	bulan, tahun := currentBulanTahun()
-	bulan = queryInt(c, "bulan", bulan)
-	tahun = queryInt(c, "tahun", tahun)
+	defaultBulan, defaultTahun := currentBulanTahun()
+	startBulan := queryInt(c, "startBulan", 0)
 
 	type Distribusi struct {
 		Baik  int `gorm:"column:baik"  json:"baik"`
@@ -296,14 +311,25 @@ func GetDistribusiKPIBulan(c echo.Context) error {
 	}
 
 	var result Distribusi
-	config.DB.Table(`"KPIPegawai"`).
-		Select(`SUM(baik) AS baik, SUM(cukup) AS cukup, SUM(buruk) AS buruk`).
-		Where("bulan = ? AND tahun = ?", bulan, tahun).
-		Scan(&result)
+	query := config.DB.Table(`"KPIPegawai"`).
+		Select(`SUM(baik) AS baik, SUM(cukup) AS cukup, SUM(buruk) AS buruk`)
+
+	if startBulan > 0 {
+		startTahun := queryInt(c, "startTahun", defaultTahun)
+		endBulan := queryInt(c, "endBulan", defaultBulan)
+		endTahun := queryInt(c, "endTahun", defaultTahun)
+
+		query = query.Where(`("KPIPegawai".tahun > ? OR ("KPIPegawai".tahun = ? AND "KPIPegawai".bulan >= ?)) AND ("KPIPegawai".tahun < ? OR ("KPIPegawai".tahun = ? AND "KPIPegawai".bulan <= ?))`,
+			startTahun, startTahun, startBulan, endTahun, endTahun, endBulan)
+	} else {
+		bulan := queryInt(c, "bulan", defaultBulan)
+		tahun := queryInt(c, "tahun", defaultTahun)
+		query = query.Where(`"KPIPegawai".bulan = ? AND "KPIPegawai".tahun = ?`, bulan, tahun)
+	}
+
+	query.Scan(&result)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"bulan": bulan,
-		"tahun": tahun,
 		"data":  result,
 	})
 }

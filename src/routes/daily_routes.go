@@ -35,6 +35,11 @@ func ActivityRoutes(e *echo.Echo) {
 	g.GET("/:id/chat/unread", controllers.GetUnreadChatCount, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/chat/unread-total", controllers.GetTotalUnreadChatCount, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/chat/threads", controllers.GetChatThreads, middleware.VerifyToken, middleware.AuthorizeRole(4))
+
+	g.GET("/notifikasi", controllers.GetNotifikasiList, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.GET("/notifikasi/unread-count", controllers.GetUnreadNotifikasiCount, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.PATCH("/notifikasi/:id/read", controllers.ReadNotifikasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.PATCH("/notifikasi/read-all", controllers.ReadAllNotifikasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/konfirmasi-kolaborasi", controllers.GetActivityKonfirmasiKolaborasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/konfirmasi-kolaborasi", controllers.KonfirmasiKolaborasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("/:id/dokumen", controllers.UploadDokumen, middleware.VerifyToken, middleware.AuthorizeRole(4))
