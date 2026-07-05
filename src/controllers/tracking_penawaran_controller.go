@@ -107,7 +107,7 @@ func CreateTrackingPenawaran(c echo.Context) error {
 		ID:            activityID,
 		PegawaiID:     pegawaiID,
 		Kategori:      models.KategoriQuotation,
-		TerkaitPO:	   &req.NomorPenawaran,
+		TerkaitPO:     &req.NomorPenawaran,
 		Perusahaan:    &perusahaan.Nama,
 		Judul:         "Permintaan Masuk oleh " + perusahaan.Nama,
 		Deskripsi:     "Activity otomatis dari penawaran #" + req.NomorPenawaran,
@@ -142,6 +142,7 @@ func CreateTrackingPenawaran(c echo.Context) error {
 		Preload("Marketing").
 		Preload("PermintaanMasuk").
 		Preload("PermintaanMasuk.Activity").
+		Preload("PermintaanMasuk.Activity.Pegawai").
 		First(&result, `"id" = ?`, trackingID)
 
 	return c.JSON(http.StatusCreated, result)
@@ -190,6 +191,7 @@ func GetDetailTrackingPenawaran(c echo.Context) error {
 		Preload("PermintaanMasuk").
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PermintaanMasuk.Activity").
+		Preload("PermintaanMasuk.Activity.Pegawai").
 		Preload("PermintaanMasuk.Dokumen").
 		Preload("Chat").
 		Preload("Chat.Pegawai").
@@ -204,56 +206,55 @@ func GetDetailTrackingPenawaran(c echo.Context) error {
 
 // PATCH /tracking-penawaran/:id/presales
 func AssignPreSales(c echo.Context) error {
-    trackingID := c.Param("id")
+	trackingID := c.Param("id")
 
-    claims, ok := c.Get("user").(jwt.MapClaims)
-    if !ok {
-        return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
-    }
-    pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
-    pegawaiID, _ := pegawaiMap["id"].(string)
-    namaPegawai, _ := pegawaiMap["nama"].(string)
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	namaPegawai, _ := pegawaiMap["nama"].(string)
 
-    var body struct {
-        PreSalesID string `json:"preSalesId"`
-    }
-    if err := c.Bind(&body); err != nil || body.PreSalesID == "" {
-        return c.JSON(http.StatusBadRequest, map[string]string{"error": "preSalesId wajib diisi."})
-    }
+	var body struct {
+		PreSalesID string `json:"preSalesId"`
+	}
+	if err := c.Bind(&body); err != nil || body.PreSalesID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "preSalesId wajib diisi."})
+	}
 
-    var pegawai models.Pegawai
-    if err := config.DB.Where("id = ?", body.PreSalesID).First(&pegawai).Error; err != nil {
-        return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
-    }
+	var pegawai models.Pegawai
+	if err := config.DB.Where("id = ?", body.PreSalesID).First(&pegawai).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
+	}
 
-    var permintaanMasuk models.PermintaanMasuk
-    if err := config.DB.
-        Where("tracking_penawaran_id = ?", trackingID).
-        First(&permintaanMasuk).Error; err != nil {
-        return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
-    }
+	var permintaanMasuk models.PermintaanMasuk
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&permintaanMasuk).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
+	}
 
-    permintaanMasuk.PreSalesID = &body.PreSalesID
-    appendLog(&permintaanMasuk, "Assign PreSales", pegawai.Nama, pegawaiID, namaPegawai)
-    config.DB.Save(&permintaanMasuk)
+	permintaanMasuk.PreSalesID = &body.PreSalesID
+	appendLog(&permintaanMasuk, "Assign PreSales", pegawai.Nama, pegawaiID, namaPegawai)
+	config.DB.Save(&permintaanMasuk)
 
-    var tracking models.TrackingPenawaran
-    config.DB.
-        Where("id = ?", trackingID).
-        Preload("Marketing").
-        Preload("Perusahaan").
-        Preload("PermintaanMasuk.PreSales").
-        Preload("PermintaanMasuk.Activity").
-        Preload("PermintaanMasuk.Dokumen").
-        First(&tracking)
+	var tracking models.TrackingPenawaran
+	config.DB.
+		Where("id = ?", trackingID).
+		Preload("Marketing").
+		Preload("Perusahaan").
+		Preload("PermintaanMasuk.PreSales").
+		Preload("PermintaanMasuk.Activity").
+		Preload("PermintaanMasuk.Activity.Pegawai").
+		Preload("PermintaanMasuk.Dokumen").
+		First(&tracking)
 
-    return c.JSON(http.StatusOK, map[string]interface{}{
-        "message": "Pre-sales berhasil di-assign.",
-        "data":    tracking,
-    })
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Pre-sales berhasil di-assign.",
+		"data":    tracking,
+	})
 }
-
-
 
 func UpdateStatusPermintaanMasuk(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -390,6 +391,7 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		Preload("Perusahaan").
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PermintaanMasuk.Activity").
+		Preload("PermintaanMasuk.Activity.Pegawai").
 		Preload("PermintaanMasuk.Dokumen").
 		First(&updated)
 
@@ -398,8 +400,6 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		"data":    updated,
 	})
 }
-
-
 
 // ==========================================
 // CHAT
@@ -651,26 +651,23 @@ func GetTotalUnreadPenawaranChatCount(c echo.Context) error {
 	})
 }
 
-
-
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PenawaranListItem struct {
-	ID               string                 `json:"id"`
-	NomorPenawaran   string                 `json:"nomorPenawaran"`
-	TanggalMasuk     time.Time              `json:"tanggalMasuk"`
-	PICReq           *PegawaiSummary        `json:"picReq"`
-	PembuatPenawaran *PegawaiSummary        `json:"pembuatPenawaran"`
-	EstimasiHarga    *float64               `json:"estimasiHarga,omitempty"`
-	StepSaatIni      models.StepPenawaran   `json:"stepSaatIni"`
-	Status           models.StatusActivity  `json:"status"`
-	PerusahaanName   string                 `json:"perusahaanName,omitempty"`
-	LokasiProyek     string                 `json:"lokasiProyek,omitempty"`
+	ID               string                  `json:"id"`
+	NomorPenawaran   string                  `json:"nomorPenawaran"`
+	TanggalMasuk     time.Time               `json:"tanggalMasuk"`
+	PICReq           *PegawaiSummary         `json:"picReq"`
+	PembuatPenawaran *PegawaiSummary         `json:"pembuatPenawaran"`
+	EstimasiHarga    *float64                `json:"estimasiHarga,omitempty"`
+	StepSaatIni      models.StepPenawaran    `json:"stepSaatIni"`
+	Status           models.StatusActivity   `json:"status"`
+	PerusahaanName   string                  `json:"perusahaanName,omitempty"`
+	LokasiProyek     string                  `json:"lokasiProyek,omitempty"`
 	JenisPenawaran   []models.JenisPenawaran `json:"jenisPenawaran,omitempty"`
-	TanggalTerbit    *time.Time             `json:"tanggalTerbit,omitempty"`
-	TotalTermin      int                    `json:"totalTermin,omitempty"`
-	TerminDibayar    int                    `json:"terminDibayar,omitempty"`
+	TanggalTerbit    *time.Time              `json:"tanggalTerbit,omitempty"`
+	TotalTermin      int                     `json:"totalTermin,omitempty"`
+	TerminDibayar    int                     `json:"terminDibayar,omitempty"`
 }
 
 type PegawaiSummary struct {
@@ -693,10 +690,10 @@ type PenawaranListResponse struct {
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 var stepsPengadaan = []models.StepPenawaran{
-    models.StepPermintaanMasuk,
-    models.StepPenyusunanBoQ,
-    models.StepReviewInternal,
-    models.StepPersetujuanManajemen, 
+	models.StepPermintaanMasuk,
+	models.StepPenyusunanBoQ,
+	models.StepReviewInternal,
+	models.StepPersetujuanManajemen,
 	models.StepFollowUp,
 }
 
@@ -975,7 +972,6 @@ func GetPegawaiByDivisi(c echo.Context) error {
 	})
 }
 
-
 // controllers/penawaran.go — tambah fungsi ini
 
 func UploadPenawaranDokumen(c echo.Context) error {
@@ -1212,64 +1208,63 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 }
 
 func AssignMarketing(c echo.Context) error {
-    trackingID := c.Param("id")
+	trackingID := c.Param("id")
 
-    claims, ok := c.Get("user").(jwt.MapClaims)
-    if !ok {
-        return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
-    }
-    pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
-    pegawaiID, _ := pegawaiMap["id"].(string)
-    namaPegawai, _ := pegawaiMap["nama"].(string)
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	namaPegawai, _ := pegawaiMap["nama"].(string)
 
-    var body struct {
-        MarketingID string `json:"marketingId"`
-    }
-    if err := c.Bind(&body); err != nil || body.MarketingID == "" {
-        return c.JSON(http.StatusBadRequest, map[string]string{"error": "marketingId wajib diisi."})
-    }
+	var body struct {
+		MarketingID string `json:"marketingId"`
+	}
+	if err := c.Bind(&body); err != nil || body.MarketingID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "marketingId wajib diisi."})
+	}
 
-    var pegawai models.Pegawai
-    if err := config.DB.Where("id = ?", body.MarketingID).First(&pegawai).Error; err != nil {
-        return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
-    }
+	var pegawai models.Pegawai
+	if err := config.DB.Where("id = ?", body.MarketingID).First(&pegawai).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
+	}
 
-    if err := config.DB.Model(&models.TrackingPenawaran{}).
-        Where("id = ?", trackingID).
-        Update("marketing_id", body.MarketingID).Error; err != nil {
-        return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal assign marketing."})
-    }
+	if err := config.DB.Model(&models.TrackingPenawaran{}).
+		Where("id = ?", trackingID).
+		Update("marketing_id", body.MarketingID).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal assign marketing."})
+	}
 
-    // Append log ke permintaan masuk
-    var permintaanMasuk models.PermintaanMasuk
-    if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&permintaanMasuk).Error; err == nil {
-        appendLog(&permintaanMasuk, "Assign PIC Request", pegawai.Nama, pegawaiID, namaPegawai)
-        config.DB.Save(&permintaanMasuk)
-    }
+	// Append log ke permintaan masuk
+	var permintaanMasuk models.PermintaanMasuk
+	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&permintaanMasuk).Error; err == nil {
+		appendLog(&permintaanMasuk, "Assign PIC Request", pegawai.Nama, pegawaiID, namaPegawai)
+		config.DB.Save(&permintaanMasuk)
+	}
 
-    var tracking models.TrackingPenawaran
-    config.DB.
-        Where("id = ?", trackingID).
-        Preload("Marketing").
-        Preload("Perusahaan").
-        Preload("PermintaanMasuk.PreSales").
-        Preload("PermintaanMasuk.Activity").
-        Preload("PermintaanMasuk.Dokumen").
-        First(&tracking)
+	var tracking models.TrackingPenawaran
+	config.DB.
+		Where("id = ?", trackingID).
+		Preload("Marketing").
+		Preload("Perusahaan").
+		Preload("PermintaanMasuk.PreSales").
+		Preload("PermintaanMasuk.Activity").
+		Preload("PermintaanMasuk.Dokumen").
+		First(&tracking)
 
-    return c.JSON(http.StatusOK, map[string]interface{}{
-        "message": "Marketing berhasil di-assign.",
-        "data":    tracking,
-    })
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Marketing berhasil di-assign.",
+		"data":    tracking,
+	})
 }
 
-
 func appendLog(pm *models.PermintaanMasuk, aksi, keterangan, pegawaiID, namaPegawai string) {
-    pm.Logs = append(pm.Logs, models.LogAktivitas{
-        Aksi:        aksi,
-        Keterangan:  keterangan,
-        PegawaiID:   pegawaiID,
-        NamaPegawai: namaPegawai,
-        CreatedAt:   time.Now(),
-    })
+	pm.Logs = append(pm.Logs, models.LogAktivitas{
+		Aksi:        aksi,
+		Keterangan:  keterangan,
+		PegawaiID:   pegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   time.Now(),
+	})
 }

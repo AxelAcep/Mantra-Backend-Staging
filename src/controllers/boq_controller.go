@@ -78,6 +78,7 @@ func preloadBoQ(trackingID string) (models.PenyusunanBoQ, error) {
         // 1. Preload relasi langsung dari PenyusunanBoQ
         Preload("Pembuat").
         Preload("Activity").
+        Preload("Activity.Pegawai").
         Preload("Dokumen").
         Preload("TrackingPenawaran").
         // 2. Preload nested relasi yang ada di dalam TrackingPenawaran
