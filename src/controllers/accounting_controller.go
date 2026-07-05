@@ -8,6 +8,7 @@ import (
 	"mantra/src/config"
 	"mantra/src/models"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
@@ -123,12 +124,20 @@ func CreateAccounting(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Total persentase harus 100%"})
 	}
 
-	pegawai := c.Get("pegawai").(models.Pegawai)
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	if pegawaiID == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Pegawai tidak ditemukan"})
+	}
 
 	termin := models.TerminPembayaran{
 		ID:                  uuid.New().String(),
 		TrackingPenawaranID: trackingID,
-		CreatedBy:           pegawai.ID,
+		CreatedBy:           pegawaiID,
 		Status:              models.StatusOnProgress,
 	}
 
@@ -232,4 +241,3 @@ func BayarItemTermin(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, item)
 }
-
