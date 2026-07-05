@@ -104,6 +104,64 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
+		// Initialize Step 5: FollowUp if not exists
+		var existingFollowUp models.FollowUp
+		followUpExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingFollowUp).Error == nil
+		if !followUpExists {
+			var tracking models.TrackingPenawaran
+			if err := config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID).Error; err == nil {
+				var adminPegawai models.Pegawai
+				var adminID string
+				var adminNama string
+				if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err == nil {
+					adminID = adminPegawai.ID
+					adminNama = adminPegawai.Nama
+				} else {
+					adminID = pegawaiID
+					adminNama = namaPegawai
+				}
+
+				activityID := generateActivityID()
+				perusahaanNama := tracking.Perusahaan.Nama
+				dailyAdmin := models.Activity{
+					ID:            activityID,
+					PegawaiID:     adminID,
+					TerkaitPO:     &tracking.NomorPenawaran,
+					Perusahaan:    &perusahaanNama,
+					Kategori:      models.KategoriQuotation,
+					Judul:         "Kirim Dokumen Penawaran Lengkap - " + perusahaanNama,
+					Deskripsi:     "Mengirimkan dokumen penawaran lengkap via email ke klien. Kontak: " + tracking.CustomerName + " (" + tracking.CustomerEmail + " / " + tracking.CustomerPhone + ")",
+					WaktuMulai:    time.Now(),
+					TargetSelesai: time.Now().Add(24 * time.Hour), // Deadline 1 hari
+					Status:        models.StatusOnProgress,
+				}
+				if err := config.DB.Create(&dailyAdmin).Error; err == nil {
+					followUp := models.FollowUp{
+						ID:                  uuid.New().String(),
+						TrackingPenawaranID: trackingID,
+						AdminID:             &adminID,
+						ActivityAdminID:     &activityID,
+						SalesID:             &tracking.MarketingID,
+						ActivitySalesID:     nil,
+						Status:              models.StatusOnProgress,
+						Stage:               1,
+						LogAktivitas: []models.LogFollowUp{
+							{
+								Aksi:        "Follow Up Dimulai",
+								Keterangan:  "Inisialisasi proses follow up. Tugas kirim penawaran ditugaskan ke Admin: " + adminNama,
+								PegawaiID:   pegawaiID,
+								NamaPegawai: namaPegawai,
+								CreatedAt:   time.Now(),
+							},
+						},
+						CreatedAt: time.Now(),
+						UpdatedAt: time.Now(),
+					}
+					config.DB.Create(&followUp)
+				}
+			}
+		}
+
 	case "PERLU_TINDAKAN":
 		if !isDirekturKomisaris {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "Hanya Direktur atau Komisaris yang bisa menolak."})

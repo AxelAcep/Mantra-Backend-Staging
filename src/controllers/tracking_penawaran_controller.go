@@ -657,14 +657,20 @@ func GetTotalUnreadPenawaranChatCount(c echo.Context) error {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PenawaranListItem struct {
-	ID             string                `json:"id"`
-	NomorPenawaran string                `json:"nomorPenawaran"`
-	TanggalMasuk   time.Time             `json:"tanggalMasuk"`
-	PICReq         *PegawaiSummary       `json:"picReq"`
-	PembuatPenawaran *PegawaiSummary     `json:"pembuatPenawaran"`
-	EstimasiHarga  *float64              `json:"estimasiHarga,omitempty"` // hanya untuk master
-	StepSaatIni    models.StepPenawaran  `json:"stepSaatIni"`
-	Status         models.StatusActivity `json:"status"`
+	ID               string                 `json:"id"`
+	NomorPenawaran   string                 `json:"nomorPenawaran"`
+	TanggalMasuk     time.Time              `json:"tanggalMasuk"`
+	PICReq           *PegawaiSummary        `json:"picReq"`
+	PembuatPenawaran *PegawaiSummary        `json:"pembuatPenawaran"`
+	EstimasiHarga    *float64               `json:"estimasiHarga,omitempty"`
+	StepSaatIni      models.StepPenawaran   `json:"stepSaatIni"`
+	Status           models.StatusActivity  `json:"status"`
+	PerusahaanName   string                 `json:"perusahaanName,omitempty"`
+	LokasiProyek     string                 `json:"lokasiProyek,omitempty"`
+	JenisPenawaran   []models.JenisPenawaran `json:"jenisPenawaran,omitempty"`
+	TanggalTerbit    *time.Time             `json:"tanggalTerbit,omitempty"`
+	TotalTermin      int                    `json:"totalTermin,omitempty"`
+	TerminDibayar    int                    `json:"terminDibayar,omitempty"`
 }
 
 type PegawaiSummary struct {
@@ -691,11 +697,14 @@ var stepsPengadaan = []models.StepPenawaran{
     models.StepPenyusunanBoQ,
     models.StepReviewInternal,
     models.StepPersetujuanManajemen, 
-	 models.StepFollowUp,
+	models.StepFollowUp,
 }
 
 var stepsAktif = []models.StepPenawaran{
-    models.StepFollowUp,
+	models.StepImplementasi,
+	models.StepBAST,
+	models.StepPembayaran,
+	models.StepGaransi,
 }
 
 // ─── GET /tracking-penawaran ──────────────────────────────────────────────────
@@ -706,7 +715,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 	}
 
-	isMaster, _ := c.Get("isMaster").(bool)
+	_, _ = c.Get("isMaster").(bool)
 
 	page := max(1, toInt(c.QueryParam("page"), 1))
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
@@ -742,6 +751,9 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PenyusunanBoQ").
 		Preload("PenyusunanBoQ.Pembuat").
+		Preload("Perusahaan").
+		Preload("FollowUp").
+		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
 		Limit(limit).
 		Offset(offset).
@@ -758,6 +770,9 @@ func GetTrackingPenawaranList(c echo.Context) error {
 			TanggalMasuk:   r.CreatedAt,
 			StepSaatIni:    r.StepSaatIni,
 			Status:         r.Status, // dari field baru TrackingPenawaran
+			PerusahaanName: r.Perusahaan.Nama,
+			LokasiProyek:   r.LokasiProyek,
+			JenisPenawaran: r.JenisPenawaran,
 		}
 
 		item.PICReq = &PegawaiSummary{
@@ -772,8 +787,23 @@ func GetTrackingPenawaranList(c echo.Context) error {
 			}
 		}
 
-		if isMaster && r.PenyusunanBoQ != nil {
+		if r.PenyusunanBoQ != nil {
 			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
+		}
+
+		if r.FollowUp != nil && r.FollowUp.Status == models.StatusSelesai {
+			item.TanggalTerbit = &r.FollowUp.UpdatedAt
+		}
+
+		if r.Accounting != nil {
+			item.TotalTermin = len(r.Accounting.Items)
+			paid := 0
+			for _, it := range r.Accounting.Items {
+				if it.SudahDibayar {
+					paid++
+				}
+			}
+			item.TerminDibayar = paid
 		}
 
 		items = append(items, item)
@@ -798,7 +828,7 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 	}
 
-	isMaster, _ := c.Get("isMaster").(bool)
+	_, _ = c.Get("isMaster").(bool)
 
 	page := max(1, toInt(c.QueryParam("page"), 1))
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
@@ -834,6 +864,9 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PenyusunanBoQ").
 		Preload("PenyusunanBoQ.Pembuat").
+		Preload("Perusahaan").
+		Preload("FollowUp").
+		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
 		Limit(limit).
 		Offset(offset).
@@ -850,6 +883,9 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 			TanggalMasuk:   r.CreatedAt,
 			StepSaatIni:    r.StepSaatIni,
 			Status:         r.Status, // dari field baru TrackingPenawaran
+			PerusahaanName: r.Perusahaan.Nama,
+			LokasiProyek:   r.LokasiProyek,
+			JenisPenawaran: r.JenisPenawaran,
 		}
 
 		item.PICReq = &PegawaiSummary{
@@ -864,8 +900,23 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 			}
 		}
 
-		if isMaster && r.PenyusunanBoQ != nil {
+		if r.PenyusunanBoQ != nil {
 			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
+		}
+
+		if r.FollowUp != nil && r.FollowUp.Status == models.StatusSelesai {
+			item.TanggalTerbit = &r.FollowUp.UpdatedAt
+		}
+
+		if r.Accounting != nil {
+			item.TotalTermin = len(r.Accounting.Items)
+			paid := 0
+			for _, it := range r.Accounting.Items {
+				if it.SudahDibayar {
+					paid++
+				}
+			}
+			item.TerminDibayar = paid
 		}
 
 		items = append(items, item)

@@ -93,6 +93,7 @@ type TrackingPenawaran struct {
 	PenyusunanBoQ        *PenyusunanBoQ        `gorm:"foreignKey:TrackingPenawaranID" json:"penyusunanBoQ,omitempty"`
 	ReviewInternal       *ReviewInternal       `gorm:"foreignKey:TrackingPenawaranID" json:"reviewInternal,omitempty"`
 	PersetujuanManajemen *PersetujuanManajemen `gorm:"foreignKey:TrackingPenawaranID" json:"persetujuanManajemen,omitempty"`
+	FollowUp             *FollowUp             `gorm:"foreignKey:TrackingPenawaranID" json:"followUp,omitempty"`
 	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
@@ -178,7 +179,7 @@ type PenawaranDokumen struct {
 	PenyusunanBoQID        *string   `gorm:"index" json:"penyusunanBoQId,omitempty"`
 	ReviewInternalID       *string   `gorm:"index" json:"reviewInternalId,omitempty"`
 	PersetujuanManajemenID *string   `gorm:"index" json:"persetujuanManajemenId,omitempty"`
-	
+	FollowUpID             *string   `gorm:"index" json:"followUpId,omitempty"`
 
 	ActivityID             *string   `gorm:"index" json:"activityId,omitempty"`
 	Activity               *Activity `gorm:"foreignKey:ActivityID;references:ID" json:"activity,omitempty"`
@@ -227,6 +228,36 @@ type ItemTermin struct {
 func (TerminPembayaran) TableName() string { return "TerminPembayaran" }
 func (ItemTermin) TableName() string       { return "ItemTermin" }
 
+// ─── Step 5: Follow Up ────────────────────────────────────────────────────────
+
+type LogFollowUp struct {
+	Aksi        string    `json:"aksi"`
+	Keterangan  string    `json:"keterangan"`
+	PegawaiID   string    `json:"pegawaiId"`
+	NamaPegawai string    `json:"namaPegawai"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type FollowUp struct {
+	ID                  string            `gorm:"primaryKey"                                   json:"id"`
+	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+	AdminID             *string           `gorm:"index"                                        json:"adminId,omitempty"`
+	Admin               *Pegawai          `gorm:"foreignKey:AdminID;references:ID"             json:"admin,omitempty"`
+	ActivityAdminID     *string           `gorm:"index"                                        json:"activityAdminId,omitempty"`
+	ActivityAdmin       *Activity         `gorm:"foreignKey:ActivityAdminID;references:ID"     json:"activityAdmin,omitempty"`
+	SalesID             *string           `gorm:"index"                                        json:"salesId,omitempty"`
+	Sales               *Pegawai          `gorm:"foreignKey:SalesID;references:ID"             json:"sales,omitempty"`
+	ActivitySalesID     *string           `gorm:"index"                                        json:"activitySalesId,omitempty"`
+	ActivitySales       *Activity         `gorm:"foreignKey:ActivitySalesID;references:ID"     json:"activitySales,omitempty"`
+	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
+	LogAktivitas        []LogFollowUp     `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+	Dokumen             []PenawaranDokumen `gorm:"foreignKey:FollowUpID"                       json:"dokumen,omitempty"`
+	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`
+	UpdatedAt           time.Time         `                                                     json:"updatedAt"`
+}
+
 // ─── Table Names ──────────────────────────────────────────────────────────────
 
 func (TrackingPenawaran) TableName() string    { return "TrackingPenawaran" }
@@ -234,6 +265,7 @@ func (PermintaanMasuk) TableName() string      { return "PermintaanMasuk" }
 func (PenyusunanBoQ) TableName() string        { return "PenyusunanBoQ" }
 func (ReviewInternal) TableName() string       { return "ReviewInternal" }
 func (PersetujuanManajemen) TableName() string { return "PersetujuanManajemen" }
+func (FollowUp) TableName() string             { return "FollowUp" }
 func (PenawaranDokumen) TableName() string     { return "PenawaranDokumen" }
 func (PenawaranChat) TableName() string        { return "PenawaranChat" }
 
