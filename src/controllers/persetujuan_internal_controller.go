@@ -412,6 +412,13 @@ func DeleteDokumenReviewInternal(c echo.Context) error {
 		})
 	}
 
+	// Hanya pengupload asli yang boleh menghapus dokumen
+	if dokumen.UploadedBy != pegawaiID {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
+		})
+	}
+
 	uploadDir := getUploadDir()
 	filename := strings.TrimPrefix(dokumen.Path, "/uploads/")
 	filePath := filepath.Join(uploadDir, filename)

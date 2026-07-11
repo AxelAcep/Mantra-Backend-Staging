@@ -193,6 +193,7 @@ func GetDetailTrackingPenawaran(c echo.Context) error {
 		Preload("PermintaanMasuk.Activity").
 		Preload("PermintaanMasuk.Activity.Pegawai").
 		Preload("PermintaanMasuk.Dokumen").
+		Preload("PermintaanMasuk.Dokumen.Pegawai").
 		Preload("Chat").
 		Preload("Chat.Pegawai").
 		First(&tracking, `"id" = ?`, id).Error
@@ -248,6 +249,7 @@ func AssignPreSales(c echo.Context) error {
 		Preload("PermintaanMasuk.Activity").
 		Preload("PermintaanMasuk.Activity.Pegawai").
 		Preload("PermintaanMasuk.Dokumen").
+		Preload("PermintaanMasuk.Dokumen.Pegawai").
 		First(&tracking)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -393,6 +395,7 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 		Preload("PermintaanMasuk.Activity").
 		Preload("PermintaanMasuk.Activity.Pegawai").
 		Preload("PermintaanMasuk.Dokumen").
+		Preload("PermintaanMasuk.Dokumen.Pegawai").
 		First(&updated)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -1120,6 +1123,16 @@ func DeletePenawaranDokumen(c echo.Context) error {
 	permintaanMasukID := c.Param("id")
 	dokumenID := c.Param("dokumenId")
 
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
+	if !ok2 {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiID, _ := pegawaiMap["id"].(string)
+
 	// Cek permintaan masuk exist
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.First(&permintaanMasuk, "id = ?", permintaanMasukID).Error; err != nil {
@@ -1136,6 +1149,13 @@ func DeletePenawaranDokumen(c echo.Context) error {
 		})
 	}
 
+	// Hanya pengupload asli yang boleh menghapus dokumen
+	if dokumen.UploadedBy != pegawaiID {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
+		})
+	}
+
 	// Hapus file fisik
 	uploadDir := getUploadDir()
 	filename := strings.TrimPrefix(dokumen.Path, "/uploads/")
@@ -1149,25 +1169,17 @@ func DeletePenawaranDokumen(c echo.Context) error {
 		})
 	}
 
-	// Notifikasi chat
-	claims, ok := c.Get("user").(jwt.MapClaims)
-	if ok {
-		pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
-		if ok2 {
-			pegawaiID, _ := pegawaiMap["id"].(string)
-			var tracking models.TrackingPenawaran
-			if err := config.DB.First(&tracking, "id = (SELECT tracking_penawaran_id FROM PermintaanMasuk WHERE id = ?)", permintaanMasukID).Error; err == nil {
-				chatNotice := models.PenawaranChat{
-					ID:                  uuid.New().String(),
-					TrackingPenawaranID: tracking.ID,
-					PegawaiID:           pegawaiID,
-					Pesan:               "[SYSTEM_NOTIFICATION]:menghapus dokumen **" + dokumen.NamaFile + "**",
-					ReadBy:              []string{pegawaiID},
-					CreatedAt:           time.Now(),
-				}
-				config.DB.Create(&chatNotice)
-			}
+	var tracking models.TrackingPenawaran
+	if err := config.DB.First(&tracking, "id = (SELECT tracking_penawaran_id FROM PermintaanMasuk WHERE id = ?)", permintaanMasukID).Error; err == nil {
+		chatNotice := models.PenawaranChat{
+			ID:                  uuid.New().String(),
+			TrackingPenawaranID: tracking.ID,
+			PegawaiID:           pegawaiID,
+			Pesan:               "[SYSTEM_NOTIFICATION]:menghapus dokumen **" + dokumen.NamaFile + "**",
+			ReadBy:              []string{pegawaiID},
+			CreatedAt:           time.Now(),
 		}
+		config.DB.Create(&chatNotice)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
@@ -1251,6 +1263,7 @@ func AssignMarketing(c echo.Context) error {
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PermintaanMasuk.Activity").
 		Preload("PermintaanMasuk.Dokumen").
+		Preload("PermintaanMasuk.Dokumen.Pegawai").
 		First(&tracking)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{

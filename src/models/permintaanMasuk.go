@@ -94,6 +94,7 @@ type TrackingPenawaran struct {
 	ReviewInternal       *ReviewInternal       `gorm:"foreignKey:TrackingPenawaranID" json:"reviewInternal,omitempty"`
 	PersetujuanManajemen *PersetujuanManajemen `gorm:"foreignKey:TrackingPenawaranID" json:"persetujuanManajemen,omitempty"`
 	FollowUp             *FollowUp             `gorm:"foreignKey:TrackingPenawaranID" json:"followUp,omitempty"`
+	Implementasi         *Implementasi         `gorm:"foreignKey:TrackingPenawaranID" json:"implementasi,omitempty"`
 	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
@@ -180,6 +181,7 @@ type PenawaranDokumen struct {
 	ReviewInternalID       *string   `gorm:"index" json:"reviewInternalId,omitempty"`
 	PersetujuanManajemenID *string   `gorm:"index" json:"persetujuanManajemenId,omitempty"`
 	FollowUpID             *string   `gorm:"index" json:"followUpId,omitempty"`
+	ImplementasiID         *string   `gorm:"index" json:"implementasiId,omitempty"`
 
 	ActivityID             *string   `gorm:"index" json:"activityId,omitempty"`
 	Activity               *Activity `gorm:"foreignKey:ActivityID;references:ID" json:"activity,omitempty"`
@@ -268,6 +270,59 @@ func (PersetujuanManajemen) TableName() string { return "PersetujuanManajemen" }
 func (FollowUp) TableName() string             { return "FollowUp" }
 func (PenawaranDokumen) TableName() string     { return "PenawaranDokumen" }
 func (PenawaranChat) TableName() string        { return "PenawaranChat" }
+func (Implementasi) TableName() string         { return "Implementasi" }
+func (ImplementasiBarang) TableName() string   { return "ImplementasiBarang" }
+
+// ─── Step 6 Models ────────────────────────────────────────────────────────────
+
+type LogImplementasi struct {
+	Aksi        string    `json:"aksi"`
+	Keterangan  string    `json:"keterangan"`
+	PegawaiID   string    `json:"pegawaiId"`
+	NamaPegawai string    `json:"namaPegawai"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type Implementasi struct {
+	ID                  string            `gorm:"primaryKey"                                   json:"id"`
+	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+	NoPO                string            `gorm:"default:''"                                   json:"noPO"`
+	TanggalPO           *time.Time        `                                                    json:"tanggalPO,omitempty"`
+	NoWO                string            `gorm:"default:''"                                   json:"noWO"`
+	TanggalWO           *time.Time        `                                                    json:"tanggalWO,omitempty"`
+	NoDO                string            `gorm:"default:''"                                   json:"noDO"`
+	TanggalDO           *time.Time        `                                                    json:"tanggalDO,omitempty"`
+	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+	LogAktivitas        []LogImplementasi `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+	Barang              []ImplementasiBarang `gorm:"foreignKey:ImplementasiID"                json:"barang,omitempty"`
+	Dokumen             []PenawaranDokumen `gorm:"foreignKey:ImplementasiID"                  json:"dokumen,omitempty"`
+
+	// Daily Activities
+	ActivityPembelianID    *string           `gorm:"index"                                        json:"activityPembelianId,omitempty"`
+	ActivityPembelian      *Activity         `gorm:"foreignKey:ActivityPembelianID;references:ID"  json:"activityPembelian,omitempty"`
+	ActivityPengantaranID  *string           `gorm:"index"                                        json:"activityPengantaranId,omitempty"`
+	ActivityPengantaran    *Activity         `gorm:"foreignKey:ActivityPengantaranID;references:ID" json:"activityPengantaran,omitempty"`
+	ActivityInstalasiID    *string           `gorm:"index"                                        json:"activityInstalasiId,omitempty"`
+	ActivityInstalasi      *Activity         `gorm:"foreignKey:ActivityInstalasiID;references:ID"  json:"activityInstalasi,omitempty"`
+
+	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`
+	UpdatedAt           time.Time         `                                                     json:"updatedAt"`
+}
+
+type ImplementasiBarang struct {
+	ID                  string     `gorm:"primaryKey"         json:"id"`
+	ImplementasiID      string     `gorm:"not null;index"     json:"implementasiId"`
+	NamaBarang          string     `gorm:"not null"           json:"namaBarang"`
+	Status              string     `gorm:"not null"           json:"status"` // "Ready" | "Perlu Beli"
+	Qty                 float64    `gorm:"not null"           json:"qty"`
+	Satuan              string     `gorm:"not null"           json:"satuan"`
+	HargaSatuan         float64    `gorm:"not null"           json:"hargaSatuan"`
+	Metode              string     `gorm:"not null"           json:"metode"`
+	EstimasiKedatangan  *time.Time `                         json:"estimasiKedatangan,omitempty"`
+	CreatedAt           time.Time  `gorm:"index"              json:"createdAt"`
+	UpdatedAt           time.Time  `                          json:"updatedAt"`
+}
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
 

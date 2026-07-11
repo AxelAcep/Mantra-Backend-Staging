@@ -48,6 +48,8 @@ func ConnectDB() {
 		&models.ReviewInternal{},
 		&models.PersetujuanManajemen{},
 		&models.FollowUp{},
+		&models.Implementasi{},
+		&models.ImplementasiBarang{},
 		&models.PenawaranDokumen{},
 		&models.PenawaranChat{},
 		&models.TerminPembayaran{},

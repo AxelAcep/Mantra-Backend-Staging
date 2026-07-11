@@ -80,6 +80,7 @@ func preloadBoQ(trackingID string) (models.PenyusunanBoQ, error) {
         Preload("Activity").
         Preload("Activity.Pegawai").
         Preload("Dokumen").
+        Preload("Dokumen.Pegawai").
         Preload("TrackingPenawaran").
         // 2. Preload nested relasi yang ada di dalam TrackingPenawaran
         Preload("TrackingPenawaran.Perusahaan").
@@ -298,6 +299,17 @@ func DeleteDokumenBoQ(c echo.Context) error {
 	trackingID := c.Param("id")
 	dokumenID := c.Param("dokumenId")
 
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
+	if !ok2 {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	namaPegawai, _ := pegawaiMap["nama"].(string)
+
 	// Cek data PenyusunanBoQ exist berdasarkan tracking_penawaran_id
 	var boq models.PenyusunanBoQ
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&boq).Error; err != nil {
@@ -311,6 +323,13 @@ func DeleteDokumenBoQ(c echo.Context) error {
 	if err := config.DB.Where("id = ? AND penyusunan_bo_q_id = ?", dokumenID, boq.ID).First(&dokumen).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"message": "Dokumen BoQ tidak ditemukan",
+		})
+	}
+
+	// Hanya pengupload asli yang boleh menghapus dokumen
+	if dokumen.UploadedBy != pegawaiID {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
 		})
 	}
 
@@ -328,15 +347,7 @@ func DeleteDokumenBoQ(c echo.Context) error {
 	}
 
 	// Notifikasi chat menggunakan trackingID rute
-	claims, ok := c.Get("user").(jwt.MapClaims)
-	if ok {
-		pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
-		if ok2 {
-			pegawaiID, _ := pegawaiMap["id"].(string)
-			namaPegawai, _ := pegawaiMap["nama"].(string)
-			appendBoQLog(&boq, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
-		}
-	}
+	appendBoQLog(&boq, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Dokumen BoQ berhasil dihapus",

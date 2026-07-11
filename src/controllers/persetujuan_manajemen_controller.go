@@ -345,6 +345,17 @@ func DeleteDokumenPersetujuanManajemen(c echo.Context) error {
 	trackingID := c.Param("id")
 	dokumenID := c.Param("dokumenId")
 
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
+	if !ok2 {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	namaPegawai, _ := pegawaiMap["nama"].(string)
+
 	var persetujuan models.PersetujuanManajemen
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&persetujuan).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
@@ -359,6 +370,13 @@ func DeleteDokumenPersetujuanManajemen(c echo.Context) error {
 		})
 	}
 
+	// Hanya pengupload asli yang boleh menghapus dokumen
+	if dokumen.UploadedBy != pegawaiID {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
+		})
+	}
+
 	uploadDir := getUploadDir()
 	filename := strings.TrimPrefix(dokumen.Path, "/uploads/")
 	filePath := filepath.Join(uploadDir, filename)
@@ -370,15 +388,7 @@ func DeleteDokumenPersetujuanManajemen(c echo.Context) error {
 		})
 	}
 
-	claims, ok := c.Get("user").(jwt.MapClaims)
-	if ok {
-		pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
-		if ok2 {
-			pegawaiID, _ := pegawaiMap["id"].(string)
-			namaPegawai, _ := pegawaiMap["nama"].(string)
-			appendPersetujuanManajemenLog(&persetujuan, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
-		}
-	}
+	appendPersetujuanManajemenLog(&persetujuan, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Dokumen Persetujuan Manajemen berhasil dihapus",
