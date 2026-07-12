@@ -185,18 +185,18 @@ func GetDetailTrackingPenawaran(c echo.Context) error {
 	id := c.Param("id")
 
 	var tracking models.TrackingPenawaran
-	err := config.DB.
-		Preload("Perusahaan").
-		Preload("Marketing").
-		Preload("PermintaanMasuk").
-		Preload("PermintaanMasuk.PreSales").
-		Preload("PermintaanMasuk.Activity").
-		Preload("PermintaanMasuk.Activity.Pegawai").
-		Preload("PermintaanMasuk.Dokumen").
-		Preload("PermintaanMasuk.Dokumen.Pegawai").
-		Preload("Chat").
-		Preload("Chat.Pegawai").
-		First(&tracking, `"id" = ?`, id).Error
+err := config.DB.
+    Preload("Perusahaan").
+    Preload("Marketing").
+    Preload("PermintaanMasuk").
+    Preload("PermintaanMasuk.PreSales").
+    Preload("PermintaanMasuk.Activity").
+    Preload("PermintaanMasuk.Activity.Pegawai").
+    Preload("PermintaanMasuk.Activity.Dokumen").
+    Preload("PermintaanMasuk.Activity.Dokumen.Pegawai").
+    Preload("Chat").
+    Preload("Chat.Pegawai").
+    First(&tracking, `"id" = ?`, id).Error
 
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"message": "Tracking penawaran tidak ditemukan"})
@@ -231,14 +231,100 @@ func AssignPreSales(c echo.Context) error {
 
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.
+		Preload("TrackingPenawaran").
+		Preload("TrackingPenawaran.Perusahaan").
 		Where("tracking_penawaran_id = ?", trackingID).
 		First(&permintaanMasuk).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
 	}
 
 	permintaanMasuk.PreSalesID = &body.PreSalesID
+	permintaanMasuk.Status = models.StatusSelesai
 	appendLog(&permintaanMasuk, "Assign PreSales", pegawai.Nama, pegawaiID, namaPegawai)
 	config.DB.Save(&permintaanMasuk)
+
+	// ============ LOGIC BARU ============
+	
+	// 1. Update TrackingPenawaran: StepSaatIni ke PENYUSUNAN_BOQ dan Status ke ON_PROGRESS
+	config.DB.Model(&models.TrackingPenawaran{}).
+		Where("id = ?", trackingID).
+		Updates(map[string]interface{}{
+			"step_saat_ini": models.StepPenyusunanBoQ,
+			"status":        models.StatusOnProgress,
+		})
+
+	// 2. Buat Daily Activity untuk PreSales (Quotation)
+	namaPerusahaan := permintaanMasuk.TrackingPenawaran.Perusahaan.Nama
+	nomorPO := ""
+	if permintaanMasuk.TrackingPenawaran.NomorPO != nil {
+		nomorPO = *permintaanMasuk.TrackingPenawaran.NomorPO
+	}
+
+	dailyActivity := models.Activity{
+		ID:            generateActivityID(),
+		PegawaiID:     body.PreSalesID,
+		TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+		Perusahaan:    &namaPerusahaan,
+		Kategori:      models.KategoriQuotation,
+		Judul:         "Penanganan Penawaran " + namaPerusahaan,
+		Deskripsi:     "Activity otomatis dari assign PreSales untuk penawaran #" + nomorPO,
+		WaktuMulai:    time.Now(),
+		TargetSelesai: time.Now().Add(24 * time.Hour),
+		Status:        models.StatusOnProgress,
+	}
+	
+	if err := config.DB.Create(&dailyActivity).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
+	}
+
+	// 3. Cek apakah BoQ sudah ada, jika belum buat BoQ + Activity BoQ
+	var existingBoQ models.PenyusunanBoQ
+	boqExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingBoQ).Error == nil
+
+	if !boqExists {
+		// Buat activity BoQ
+		activityBoqID := generateActivityID()
+		dailyBoq := models.Activity{
+			ID:            activityBoqID,
+			PegawaiID:     body.PreSalesID,
+			TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+			Perusahaan:    &namaPerusahaan,
+			Kategori:      models.KategoriBillOfQuantity,
+			Judul:         "Pembuatan BOQ " + namaPerusahaan,
+			Deskripsi:     "Activity otomatis dari penawaran #" + nomorPO,
+			WaktuMulai:    time.Now(),
+			TargetSelesai: time.Now().Add(24 * time.Hour),
+			Status:        models.StatusOnProgress,
+		}
+		if err := config.DB.Create(&dailyBoq).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity BoQ."})
+		}
+
+		// Buat BoQ, link ke activity
+		boq := models.PenyusunanBoQ{
+			ID:                  uuid.New().String(),
+			TrackingPenawaranID: trackingID,
+			PembuatID:           &body.PreSalesID,
+			ActivityID:          &activityBoqID,
+			Status:              models.StatusOnProgress,
+			LogAktivitas: []models.LogBoq{
+				{
+					Aksi:        "BoQ telah dimulai",
+					Keterangan:  "Proses penyusunan BoQ baru saja diinisialisasi.",
+					PegawaiID:   body.PreSalesID,
+					NamaPegawai: pegawai.Nama,
+					CreatedAt:   time.Now(),
+				},
+			},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if err := config.DB.Create(&boq).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat BoQ."})
+		}
+	}
+
+	// ============ AKHIR LOGIC BARU ============
 
 	var tracking models.TrackingPenawaran
 	config.DB.
@@ -980,7 +1066,6 @@ func GetPegawaiByDivisi(c echo.Context) error {
 func UploadPenawaranDokumen(c echo.Context) error {
 	permintaanMasukID := c.Param("id")
 
-	// Ambil claims — sama persis dengan pattern controller lain
 	claims, ok := c.Get("user").(jwt.MapClaims)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
@@ -988,27 +1073,25 @@ func UploadPenawaranDokumen(c echo.Context) error {
 	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
 	pegawaiID, _ := pegawaiMap["id"].(string)
 
-	// Cek permintaan masuk exist
+	// Cek permintaan masuk exist DAN ambil ActivityID
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.First(&permintaanMasuk, "id = ?", permintaanMasukID).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Permintaan masuk tidak ditemukan",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Permintaan masuk tidak ditemukan"})
 	}
 
-	// Parse multipart form (max 10MB)
+	// Ambil ActivityID dari PermintaanMasuk
+	if permintaanMasuk.ActivityID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Activity belum tersedia untuk permintaan ini"})
+	}
+
+	// Parse multipart form
 	if err := c.Request().ParseMultipartForm(10 << 20); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Gagal parse form: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Gagal parse form: " + err.Error()})
 	}
 
-	// Ambil file
 	file, err := c.FormFile("file")
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "File tidak ditemukan: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "File tidak ditemukan: " + err.Error()})
 	}
 
 	// Validasi ekstensi
@@ -1023,47 +1106,33 @@ func UploadPenawaranDokumen(c echo.Context) error {
 	}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if !allowedExt[ext] {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Tipe file tidak diizinkan",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Tipe file tidak diizinkan"})
 	}
 
-	// Validasi ukuran (max 10MB)
 	const maxSize = 10 << 20
 	if file.Size > maxSize {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Ukuran file maksimal 10MB",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Ukuran file maksimal 10MB"})
 	}
 
-	// Buat folder uploads
 	uploadDir := getUploadDir()
 	if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuat folder upload",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuat folder upload"})
 	}
 
-	// Generate nama file unik
 	uniqueID := uuid.New().String()
 	safeOriginal := sanitizeFilename(strings.TrimSuffix(file.Filename, ext))
 	newFilename := fmt.Sprintf("%s_%s%s", uniqueID, safeOriginal, ext)
 	destPath := filepath.Join(uploadDir, newFilename)
 
-	// Buka dan simpan file
 	src, err := file.Open()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuka file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuka file"})
 	}
 	defer src.Close()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menyimpan file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan file"})
 	}
 	defer dst.Close()
 
@@ -1080,25 +1149,23 @@ func UploadPenawaranDokumen(c echo.Context) error {
 
 	filePath := "/uploads/" + newFilename
 
-	// Simpan ke DB
-	dokumen := models.PenawaranDokumen{
-		ID:                uuid.New().String(),
-		NamaFile:          file.Filename,
-		Path:              filePath,
-		UploadedBy:        pegawaiID,
-		PermintaanMasukID: &permintaanMasukID,
-		CreatedAt:         time.Now(),
+	// Simpan ke ActivityDokumen (bukan PenawaranDokumen)
+	dokumen := models.ActivityDokumen{
+		ID:         uuid.New().String(),
+		NamaFile:   file.Filename,
+		Path:       filePath,
+		UploadedBy: pegawaiID,
+		ActivityID: *permintaanMasuk.ActivityID,
+		CreatedAt:  time.Now(),
 	}
 	if err := config.DB.Create(&dokumen).Error; err != nil {
 		os.Remove(destPath)
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menyimpan data dokumen",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan data dokumen"})
 	}
 
-	// Notifikasi chat penawaran
+	// Notifikasi chat
 	var tracking models.TrackingPenawaran
-	if err := config.DB.First(&tracking, "id = (SELECT tracking_penawaran_id FROM PermintaanMasuk WHERE id = ?)", permintaanMasukID).Error; err == nil {
+	if err := config.DB.First(&tracking, "id = ?", permintaanMasuk.TrackingPenawaranID).Error; err == nil {
 		chatNotice := models.PenawaranChat{
 			ID:                  uuid.New().String(),
 			TrackingPenawaranID: tracking.ID,
@@ -1110,7 +1177,6 @@ func UploadPenawaranDokumen(c echo.Context) error {
 		config.DB.Create(&chatNotice)
 	}
 
-	// Preload pegawai untuk response
 	config.DB.Preload("Pegawai").First(&dokumen, "id = ?", dokumen.ID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
@@ -1136,24 +1202,17 @@ func DeletePenawaranDokumen(c echo.Context) error {
 	// Cek permintaan masuk exist
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.First(&permintaanMasuk, "id = ?", permintaanMasukID).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Permintaan masuk tidak ditemukan",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Permintaan masuk tidak ditemukan"})
 	}
 
-	// Cari dokumen
-	var dokumen models.PenawaranDokumen
-	if err := config.DB.First(&dokumen, "id = ? AND permintaan_masuk_id = ?", dokumenID, permintaanMasukID).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Dokumen tidak ditemukan",
-		})
+	// Cari dokumen di ActivityDokumen
+	var dokumen models.ActivityDokumen
+	if err := config.DB.First(&dokumen, "id = ? AND activity_id = ?", dokumenID, permintaanMasuk.ActivityID).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Dokumen tidak ditemukan"})
 	}
 
-	// Hanya pengupload asli yang boleh menghapus dokumen
 	if dokumen.UploadedBy != pegawaiID {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
-		})
+		return c.JSON(http.StatusForbidden, map[string]string{"message": "Anda tidak berhak menghapus dokumen ini"})
 	}
 
 	// Hapus file fisik
@@ -1164,13 +1223,11 @@ func DeletePenawaranDokumen(c echo.Context) error {
 
 	// Hapus dari DB
 	if err := config.DB.Delete(&dokumen).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menghapus dokumen",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghapus dokumen"})
 	}
 
 	var tracking models.TrackingPenawaran
-	if err := config.DB.First(&tracking, "id = (SELECT tracking_penawaran_id FROM PermintaanMasuk WHERE id = ?)", permintaanMasukID).Error; err == nil {
+	if err := config.DB.First(&tracking, "id = ?", permintaanMasuk.TrackingPenawaranID).Error; err == nil {
 		chatNotice := models.PenawaranChat{
 			ID:                  uuid.New().String(),
 			TrackingPenawaranID: tracking.ID,
@@ -1182,9 +1239,7 @@ func DeletePenawaranDokumen(c echo.Context) error {
 		config.DB.Create(&chatNotice)
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "Dokumen berhasil dihapus",
-	})
+	return c.JSON(http.StatusOK, map[string]string{"message": "Dokumen berhasil dihapus"})
 }
 
 func UpdateDetailTrackingPenawaran(c echo.Context) error {

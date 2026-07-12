@@ -36,7 +36,11 @@ func preloadReviewInternal(trackingID string) (models.ReviewInternal, error) {
         Where("tracking_penawaran_id = ?", trackingID).
         Preload("TrackingPenawaran.Perusahaan").
         Preload("TrackingPenawaran.Marketing").
+		Preload("ActivityAdmin").        // ← tambahkan ini
+        Preload("ActivityAdmin.Pegawai"). // ← opsional, kalau mau info pegawainya juga
         Preload("Dokumen").
+		Preload("ActivityAdmin.Dokumen").
+		Preload("ActivityAdmin.Dokumen.Pegawai").
         First(&review).Error
     return review, err
 }
@@ -284,22 +288,20 @@ func UploadDokumenReviewInternal(c echo.Context) error {
 
 	var reviewInternal models.ReviewInternal
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&reviewInternal).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "Review Internal tidak ditemukan untuk penawaran ini.",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Review Internal tidak ditemukan."})
+	}
+
+	if reviewInternal.ActivityAdminID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Activity Admin belum tersedia."})
 	}
 
 	if err := c.Request().ParseMultipartForm(10 << 20); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Gagal parse form: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Gagal parse form: " + err.Error()})
 	}
 
 	file, err := c.FormFile("file")
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "File tidak ditemukan: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "File tidak ditemukan: " + err.Error()})
 	}
 
 	allowedExt := map[string]bool{
@@ -313,23 +315,17 @@ func UploadDokumenReviewInternal(c echo.Context) error {
 	}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if !allowedExt[ext] {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Tipe file tidak diizinkan.",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tipe file tidak diizinkan."})
 	}
 
 	const maxSize = 10 << 20
 	if file.Size > maxSize {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Ukuran file maksimal 10MB.",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Ukuran file maksimal 10MB."})
 	}
 
 	uploadDir := getUploadDir()
 	if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Gagal membuat folder upload.",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat folder upload."})
 	}
 
 	uniqueID := uuid.New().String()
@@ -339,17 +335,13 @@ func UploadDokumenReviewInternal(c echo.Context) error {
 
 	src, err := file.Open()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Gagal membuka file.",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuka file."})
 	}
 	defer src.Close()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Gagal menyimpan file.",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menyimpan file."})
 	}
 	defer dst.Close()
 
@@ -364,19 +356,19 @@ func UploadDokumenReviewInternal(c echo.Context) error {
 		}
 	}
 
-	dokumen := models.PenawaranDokumen{
-		ID:               uuid.New().String(),
-		NamaFile:         file.Filename,
-		Path:             "/uploads/" + newFilename,
-		UploadedBy:       pegawaiID,
-		ReviewInternalID: &reviewInternal.ID,
-		CreatedAt:        time.Now(),
+	filePath := "/uploads/" + newFilename
+
+	dokumen := models.ActivityDokumen{
+		ID:         uuid.New().String(),
+		NamaFile:   file.Filename,
+		Path:       filePath,
+		UploadedBy: pegawaiID,
+		ActivityID: *reviewInternal.ActivityAdminID,
+		CreatedAt:  time.Now(),
 	}
 	if err := config.DB.Create(&dokumen).Error; err != nil {
 		os.Remove(destPath)
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Gagal menyimpan data dokumen Review Internal.",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menyimpan data dokumen."})
 	}
 
 	appendReviewInternalLog(&reviewInternal, "Upload Dokumen", "Menambahkan dokumen **"+file.Filename+"**", pegawaiID, namaPegawai)
@@ -384,7 +376,7 @@ func UploadDokumenReviewInternal(c echo.Context) error {
 	config.DB.Preload("Pegawai").First(&dokumen, "id = ?", dokumen.ID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message": "File Review Internal berhasil diunggah.",
+		"message": "File berhasil diunggah.",
 		"data":    dokumen,
 	})
 }
@@ -400,23 +392,16 @@ func DeleteDokumenReviewInternal(c echo.Context) error {
 
 	var reviewInternal models.ReviewInternal
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&reviewInternal).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "Review Internal tidak ditemukan.",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Review Internal tidak ditemukan."})
 	}
 
-	var dokumen models.PenawaranDokumen
-	if err := config.DB.Where("id = ? AND review_internal_id = ?", dokumenID, reviewInternal.ID).First(&dokumen).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "Dokumen Review Internal tidak ditemukan.",
-		})
+	var dokumen models.ActivityDokumen
+	if err := config.DB.Where("id = ? AND activity_id = ?", dokumenID, reviewInternal.ActivityAdminID).First(&dokumen).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Dokumen tidak ditemukan."})
 	}
 
-	// Hanya pengupload asli yang boleh menghapus dokumen
 	if dokumen.UploadedBy != pegawaiID {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
-		})
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Anda tidak berhak menghapus dokumen ini."})
 	}
 
 	uploadDir := getUploadDir()
@@ -425,16 +410,12 @@ func DeleteDokumenReviewInternal(c echo.Context) error {
 	os.Remove(filePath)
 
 	if err := config.DB.Delete(&dokumen).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Gagal menghapus dokumen Review Internal.",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghapus dokumen."})
 	}
 
 	appendReviewInternalLog(&reviewInternal, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "Dokumen Review Internal berhasil dihapus.",
-	})
+	return c.JSON(http.StatusOK, map[string]string{"message": "Dokumen berhasil dihapus."})
 }
 
 func appendReviewInternalLog(reviewInternal *models.ReviewInternal, aksi, keterangan, pegawaiID, namaPegawai string) {

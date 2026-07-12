@@ -22,6 +22,10 @@ func preloadPersetujuanManajemen(trackingID string) (models.PersetujuanManajemen
         Preload("TrackingPenawaran.Perusahaan").
         Preload("TrackingPenawaran.Marketing").
         Preload("Dokumen").
+		Preload("ActivityAdmin").         // ← tambahkan
+        Preload("ActivityAdmin.Pegawai"). // ← tambahkan
+		Preload("ActivityAdmin.Dokumen").
+		Preload("ActivityAdmin.Dokumen.Pegawai").
         First(&persetujuan).Error
     return persetujuan, err
 }
@@ -104,61 +108,96 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
-		// Initialize Step 5: FollowUp if not exists
+		// --- Buat Daily untuk Admin Sekertariat ---
+		var adminPegawai models.Pegawai
+		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
+			// fallback ke pegawai yang sedang login
+			adminPegawai.ID = pegawaiID
+			adminPegawai.Nama = namaPegawai
+		}
+
+		var tracking models.TrackingPenawaran
+		config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID)
+		namaPerusahaan := tracking.Perusahaan.Nama
+
+		now := time.Now()
+		deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
+		if now.After(deadline) {
+			deadline = deadline.Add(24 * time.Hour)
+		}
+
+		activityID := generateActivityID()
+		dailyAdmin := models.Activity{
+			ID:            activityID,
+			PegawaiID:     adminPegawai.ID,
+			TerkaitPO:     &tracking.NomorPenawaran,
+			Perusahaan:    &namaPerusahaan,
+			Kategori:      models.KategoriQuotation,
+			Judul:         "Pengecekan Persetujuan Manajemen - " + namaPerusahaan,
+			Deskripsi:     "Activity otomatis setelah Direktur/Komisaris menyetujui persetujuan manajemen untuk penawaran #" + tracking.NomorPenawaran,
+			WaktuMulai:    time.Now(),
+			TargetSelesai: deadline,
+			Status:        models.StatusOnProgress,
+		}
+		if err := config.DB.Create(&dailyAdmin).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
+		}
+
+		persetujuan.ActivityAdminID = &activityID
+		config.DB.Save(&persetujuan)
+
+		// --- Inisialisasi FollowUp ---
 		var existingFollowUp models.FollowUp
 		followUpExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingFollowUp).Error == nil
 		if !followUpExists {
-			var tracking models.TrackingPenawaran
-			if err := config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID).Error; err == nil {
-				var adminPegawai models.Pegawai
-				var adminID string
-				var adminNama string
-				if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err == nil {
-					adminID = adminPegawai.ID
-					adminNama = adminPegawai.Nama
-				} else {
-					adminID = pegawaiID
-					adminNama = namaPegawai
-				}
+			var adminFollowUp models.Pegawai
+			var adminID string
+			var adminNama string
+			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminFollowUp).Error; err == nil {
+				adminID = adminFollowUp.ID
+				adminNama = adminFollowUp.Nama
+			} else {
+				adminID = pegawaiID
+				adminNama = namaPegawai
+			}
 
-				activityID := generateActivityID()
-				perusahaanNama := tracking.Perusahaan.Nama
-				dailyAdmin := models.Activity{
-					ID:            activityID,
-					PegawaiID:     adminID,
-					TerkaitPO:     &tracking.NomorPenawaran,
-					Perusahaan:    &perusahaanNama,
-					Kategori:      models.KategoriQuotation,
-					Judul:         "Kirim Dokumen Penawaran Lengkap - " + perusahaanNama,
-					Deskripsi:     "Mengirimkan dokumen penawaran lengkap via email ke klien. Kontak: " + tracking.CustomerName + " (" + tracking.CustomerEmail + " / " + tracking.CustomerPhone + ")",
-					WaktuMulai:    time.Now(),
-					TargetSelesai: time.Now().Add(24 * time.Hour), // Deadline 1 hari
-					Status:        models.StatusOnProgress,
-				}
-				if err := config.DB.Create(&dailyAdmin).Error; err == nil {
-					followUp := models.FollowUp{
-						ID:                  uuid.New().String(),
-						TrackingPenawaranID: trackingID,
-						AdminID:             &adminID,
-						ActivityAdminID:     &activityID,
-						SalesID:             &tracking.MarketingID,
-						ActivitySalesID:     nil,
-						Status:              models.StatusOnProgress,
-						Stage:               1,
-						LogAktivitas: []models.LogFollowUp{
-							{
-								Aksi:        "Follow Up Dimulai",
-								Keterangan:  "Inisialisasi proses follow up. Tugas kirim penawaran ditugaskan ke Admin: " + adminNama,
-								PegawaiID:   pegawaiID,
-								NamaPegawai: namaPegawai,
-								CreatedAt:   time.Now(),
-							},
+			followUpActivityID := generateActivityID()
+			perusahaanNama := tracking.Perusahaan.Nama
+			dailyFollowUp := models.Activity{
+				ID:            followUpActivityID,
+				PegawaiID:     adminID,
+				TerkaitPO:     &tracking.NomorPenawaran,
+				Perusahaan:    &perusahaanNama,
+				Kategori:      models.KategoriQuotation,
+				Judul:         "Kirim Dokumen Penawaran Lengkap - " + perusahaanNama,
+				Deskripsi:     "Mengirimkan dokumen penawaran lengkap via email ke klien. Kontak: " + tracking.CustomerName + " (" + tracking.CustomerEmail + " / " + tracking.CustomerPhone + ")",
+				WaktuMulai:    time.Now(),
+				TargetSelesai: time.Now().Add(24 * time.Hour),
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&dailyFollowUp).Error; err == nil {
+				followUp := models.FollowUp{
+					ID:                  uuid.New().String(),
+					TrackingPenawaranID: trackingID,
+					AdminID:             &adminID,
+					ActivityAdminID:     &followUpActivityID,
+					SalesID:             &tracking.MarketingID,
+					ActivitySalesID:     nil,
+					Status:              models.StatusOnProgress,
+					Stage:               1,
+					LogAktivitas: []models.LogFollowUp{
+						{
+							Aksi:        "Follow Up Dimulai",
+							Keterangan:  "Inisialisasi proses follow up. Tugas kirim penawaran ditugaskan ke Admin: " + adminNama,
+							PegawaiID:   pegawaiID,
+							NamaPegawai: namaPegawai,
+							CreatedAt:   time.Now(),
 						},
-						CreatedAt: time.Now(),
-						UpdatedAt: time.Now(),
-					}
-					config.DB.Create(&followUp)
+					},
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
 				}
+				config.DB.Create(&followUp)
 			}
 		}
 
@@ -239,6 +278,13 @@ func UploadDokumenPersetujuanManajemen(c echo.Context) error {
 		})
 	}
 
+	// Pastikan daily admin sudah ada
+	if persetujuan.ActivityAdminID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "Activity Admin belum tersedia. Harap proses persetujuan terlebih dahulu.",
+		})
+	}
+
 	if err := c.Request().ParseMultipartForm(10 << 20); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"message": "Gagal parse form: " + err.Error(),
@@ -263,23 +309,17 @@ func UploadDokumenPersetujuanManajemen(c echo.Context) error {
 	}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if !allowedExt[ext] {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Tipe file tidak diizinkan",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Tipe file tidak diizinkan"})
 	}
 
 	const maxSize = 10 << 20
 	if file.Size > maxSize {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Ukuran file maksimal 10MB",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Ukuran file maksimal 10MB"})
 	}
 
 	uploadDir := getUploadDir()
 	if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuat folder upload",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuat folder upload"})
 	}
 
 	uniqueID := uuid.New().String()
@@ -289,17 +329,13 @@ func UploadDokumenPersetujuanManajemen(c echo.Context) error {
 
 	src, err := file.Open()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuka file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuka file"})
 	}
 	defer src.Close()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menyimpan file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan file"})
 	}
 	defer dst.Close()
 
@@ -316,13 +352,14 @@ func UploadDokumenPersetujuanManajemen(c echo.Context) error {
 
 	filePath := "/uploads/" + newFilename
 
-	dokumen := models.PenawaranDokumen{
-		ID:                     uuid.New().String(),
-		NamaFile:               file.Filename,
-		Path:                   filePath,
-		UploadedBy:             pegawaiID,
-		PersetujuanManajemenID: &persetujuan.ID,
-		CreatedAt:              time.Now(),
+	// Simpan ke ActivityDokumen
+	dokumen := models.ActivityDokumen{
+		ID:         uuid.New().String(),
+		NamaFile:   file.Filename,
+		Path:       filePath,
+		UploadedBy: pegawaiID,
+		ActivityID: *persetujuan.ActivityAdminID,
+		CreatedAt:  time.Now(),
 	}
 	if err := config.DB.Create(&dokumen).Error; err != nil {
 		os.Remove(destPath)
@@ -363,14 +400,20 @@ func DeleteDokumenPersetujuanManajemen(c echo.Context) error {
 		})
 	}
 
-	var dokumen models.PenawaranDokumen
-	if err := config.DB.Where("id = ? AND persetujuan_manajemen_id = ?", dokumenID, persetujuan.ID).First(&dokumen).Error; err != nil {
+	if persetujuan.ActivityAdminID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"message": "Activity Admin tidak tersedia.",
+		})
+	}
+
+	// Cari di ActivityDokumen
+	var dokumen models.ActivityDokumen
+	if err := config.DB.Where("id = ? AND activity_id = ?", dokumenID, *persetujuan.ActivityAdminID).First(&dokumen).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"message": "Dokumen Persetujuan Manajemen tidak ditemukan",
 		})
 	}
 
-	// Hanya pengupload asli yang boleh menghapus dokumen
 	if dokumen.UploadedBy != pegawaiID {
 		return c.JSON(http.StatusForbidden, map[string]string{
 			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",

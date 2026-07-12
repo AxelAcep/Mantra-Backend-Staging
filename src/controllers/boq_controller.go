@@ -41,6 +41,9 @@ func canAccessBoQ(roleStr, divisiStr string) bool {
 	if divisiStr == string(models.DivisiPresales) {
 		return true
 	}
+		if divisiStr == string(models.DivisiAdminSekertariat) {
+		return true
+	}
 	return false
 }
 
@@ -81,6 +84,8 @@ func preloadBoQ(trackingID string) (models.PenyusunanBoQ, error) {
         Preload("Activity.Pegawai").
         Preload("Dokumen").
         Preload("Dokumen.Pegawai").
+		Preload("Activity.Dokumen").
+		Preload("Activity.Dokumen.Pegawai").
         Preload("TrackingPenawaran").
         // 2. Preload nested relasi yang ada di dalam TrackingPenawaran
         Preload("TrackingPenawaran.Perusahaan").
@@ -154,6 +159,87 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 
 	appendBoQLog(&boq, "Update Sub Total", fmt.Sprintf("Harga diperbarui: Total Rp %.0f", *boq.EstimasiHarga), pegawaiID, namaPegawai)
 
+	// ── Trigger ke step berikutnya ──────────────────────────────────────
+	boq.Status = models.StatusSelesai
+	appendBoQLog(&boq, "Konfirmasi Selesai Diterima", "BoQ disetujui, lanjut ke Review Internal", pegawaiID, namaPegawai)
+	config.DB.Save(&boq)
+
+	config.DB.Model(&models.TrackingPenawaran{}).
+		Where("id = ?", trackingID).
+		Updates(map[string]interface{}{
+			"step_saat_ini": models.StepReviewInternal,
+			"status":        models.StatusOnProgress,
+		})
+
+	// Tentukan Admin Sekertariat untuk daily
+	var adminPegawai models.Pegawai
+	if divisiStr == string(models.DivisiAdminSekertariat) {
+		// Yang update adalah Admin Sekertariat, assign ke dirinya sendiri
+		adminPegawai.ID = pegawaiID
+		adminPegawai.Nama = namaPegawai
+	} else {
+		// Bukan Admin Sekertariat, cari Admin Sekertariat pertama
+		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+		}
+	}
+
+	// Ambil nama perusahaan untuk judul daily
+	var tracking models.TrackingPenawaran
+	config.DB.Preload("Perusahaan").Where("id = ?", trackingID).First(&tracking)
+	namaPerusahaan := tracking.Perusahaan.Nama
+
+	// Hitung deadline hari ini jam 5 sore, kalau sudah lewat jadi besok
+	now := time.Now()
+	deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
+	if now.After(deadline) {
+		deadline = deadline.Add(24 * time.Hour)
+	}
+
+	// Buat Daily Activity untuk Admin Sekertariat
+	activityAdminID := generateActivityID()
+	dailyAdmin := models.Activity{
+		ID:            activityAdminID,
+		PegawaiID:     adminPegawai.ID,
+		TerkaitPO:     tracking.NomorPO,
+		Perusahaan:    &namaPerusahaan,
+		Kategori:      models.KategoriQuotation,
+		Judul:         "Pengecekan Penawaran " + namaPerusahaan,
+		Deskripsi:     "Activity otomatis setelah update sub total BoQ untuk penawaran #" + tracking.NomorPenawaran,
+		WaktuMulai:    time.Now(),
+		TargetSelesai: deadline,
+		Status:        models.StatusOnProgress,
+	}
+	if err := config.DB.Create(&dailyAdmin).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
+	}
+
+	// Buat Review Internal
+	var existingReview models.ReviewInternal
+	reviewExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingReview).Error == nil
+
+	if !reviewExists {
+		review := models.ReviewInternal{
+			ID:                  uuid.New().String(),
+			TrackingPenawaranID: trackingID,
+			ActivityAdminID:     &activityAdminID,
+			AccAdminDirektur:    false,
+			AccManajerOps:       false,
+			Status:              models.StatusOnProgress,
+			CreatedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
+		}
+		if err := config.DB.Create(&review).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Review Internal."})
+		}
+	} else {
+		// Update existing review dengan activity admin
+		existingReview.ActivityAdminID = &activityAdminID
+		config.DB.Save(&existingReview)
+	}
+
+	// ── End Trigger ─────────────────────────────────────────────────────
+
 	updated, _ := preloadBoQ(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Sub total berhasil diupdate.",
@@ -166,39 +252,32 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 func UploadDokumenBoQ(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	// Ambil claims — sama persis dengan pattern controller lain
 	claims, ok := c.Get("user").(jwt.MapClaims)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 	}
 	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
 	pegawaiID, _ := pegawaiMap["id"].(string)
-	namaPegawai, _ := pegawaiMap["nama"].(string) 
+	namaPegawai, _ := pegawaiMap["nama"].(string)
 
-	// Cek data PenyusunanBoQ exist berdasarkan tracking_penawaran_id
 	var boq models.PenyusunanBoQ
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&boq).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Data Penyusunan BoQ tidak ditemukan untuk penawaran ini",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Data Penyusunan BoQ tidak ditemukan"})
 	}
 
-	// Parse multipart form (max 10MB)
+	if boq.ActivityID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Activity BoQ belum tersedia"})
+	}
+
 	if err := c.Request().ParseMultipartForm(10 << 20); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Gagal parse form: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Gagal parse form: " + err.Error()})
 	}
 
-	// Ambil file
 	file, err := c.FormFile("file")
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "File tidak ditemukan: " + err.Error(),
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "File tidak ditemukan: " + err.Error()})
 	}
 
-	// Validasi ekstensi
 	allowedExt := map[string]bool{
 		".pdf": true, ".doc": true, ".docx": true,
 		".xls": true, ".xlsx": true,
@@ -210,47 +289,33 @@ func UploadDokumenBoQ(c echo.Context) error {
 	}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if !allowedExt[ext] {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Tipe file tidak diizinkan",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Tipe file tidak diizinkan"})
 	}
 
-	// Validasi ukuran (max 10MB)
 	const maxSize = 10 << 20
 	if file.Size > maxSize {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"message": "Ukuran file maksimal 10MB",
-		})
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Ukuran file maksimal 10MB"})
 	}
 
-	// Buat folder uploads
 	uploadDir := getUploadDir()
 	if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuat folder upload",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuat folder upload"})
 	}
 
-	// Generate nama file unik
 	uniqueID := uuid.New().String()
 	safeOriginal := sanitizeFilename(strings.TrimSuffix(file.Filename, ext))
 	newFilename := fmt.Sprintf("%s_%s%s", uniqueID, safeOriginal, ext)
 	destPath := filepath.Join(uploadDir, newFilename)
 
-	// Buka dan simpan file
 	src, err := file.Open()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal membuka file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuka file"})
 	}
 	defer src.Close()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menyimpan file",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan file"})
 	}
 	defer dst.Close()
 
@@ -267,26 +332,22 @@ func UploadDokumenBoQ(c echo.Context) error {
 
 	filePath := "/uploads/" + newFilename
 
-	// Simpan ke DB - Isi PenyusunanBoQID dengan ID dari struct boq yang dicari tadi
-	dokumen := models.PenawaranDokumen{
-		ID:              uuid.New().String(),
-		NamaFile:        file.Filename,
-		Path:            filePath,
-		UploadedBy:      pegawaiID,
-		PenyusunanBoQID: &boq.ID, // Menggunakan boq.ID asli hasil query penawaran
-		CreatedAt:       time.Now(),
+	// Simpan ke ActivityDokumen
+	dokumen := models.ActivityDokumen{
+		ID:         uuid.New().String(),
+		NamaFile:   file.Filename,
+		Path:       filePath,
+		UploadedBy: pegawaiID,
+		ActivityID: *boq.ActivityID,
+		CreatedAt:  time.Now(),
 	}
 	if err := config.DB.Create(&dokumen).Error; err != nil {
 		os.Remove(destPath)
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menyimpan data dokumen BoQ",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menyimpan data dokumen BoQ"})
 	}
 
-	// Notifikasi chat penawaran langsung pakai trackingID rute
 	appendBoQLog(&boq, "Upload Dokumen", "Menambahkan dokumen **"+file.Filename+"**", pegawaiID, namaPegawai)
 
-	// Preload pegawai untuk response
 	config.DB.Preload("Pegawai").First(&dokumen, "id = ?", dokumen.ID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
@@ -310,48 +371,33 @@ func DeleteDokumenBoQ(c echo.Context) error {
 	pegawaiID, _ := pegawaiMap["id"].(string)
 	namaPegawai, _ := pegawaiMap["nama"].(string)
 
-	// Cek data PenyusunanBoQ exist berdasarkan tracking_penawaran_id
 	var boq models.PenyusunanBoQ
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&boq).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Data Penyusunan BoQ tidak ditemukan",
-		})
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Data Penyusunan BoQ tidak ditemukan"})
 	}
 
-	// Cari dokumen berdasarkan dokumenID dan penyusunan_bo_q_id relasi struct lu
-	var dokumen models.PenawaranDokumen
-	if err := config.DB.Where("id = ? AND penyusunan_bo_q_id = ?", dokumenID, boq.ID).First(&dokumen).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"message": "Dokumen BoQ tidak ditemukan",
-		})
+	// Cari dokumen di ActivityDokumen
+	var dokumen models.ActivityDokumen
+	if err := config.DB.Where("id = ? AND activity_id = ?", dokumenID, boq.ActivityID).First(&dokumen).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Dokumen BoQ tidak ditemukan"})
 	}
 
-	// Hanya pengupload asli yang boleh menghapus dokumen
 	if dokumen.UploadedBy != pegawaiID {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"message": "Anda tidak berhak menghapus dokumen ini karena diunggah oleh orang lain",
-		})
+		return c.JSON(http.StatusForbidden, map[string]string{"message": "Anda tidak berhak menghapus dokumen ini"})
 	}
 
-	// Hapus file fisik
 	uploadDir := getUploadDir()
 	filename := strings.TrimPrefix(dokumen.Path, "/uploads/")
 	filePath := filepath.Join(uploadDir, filename)
 	os.Remove(filePath)
 
-	// Hapus dari DB
 	if err := config.DB.Delete(&dokumen).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Gagal menghapus dokumen BoQ",
-		})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghapus dokumen BoQ"})
 	}
 
-	// Notifikasi chat menggunakan trackingID rute
 	appendBoQLog(&boq, "Hapus Dokumen", "Menghapus dokumen **"+dokumen.NamaFile+"**", pegawaiID, namaPegawai)
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "Dokumen BoQ berhasil dihapus",
-	})
+	return c.JSON(http.StatusOK, map[string]string{"message": "Dokumen BoQ berhasil dihapus"})
 }
 
 // ── 5. Update Status BoQ ───────────────────────────────────────────────────

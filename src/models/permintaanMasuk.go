@@ -143,28 +143,32 @@ type PenyusunanBoQ struct {
 // ─── Step 3: Review Internal ──────────────────────────────────────────────────
 
 type ReviewInternal struct {
-    ID                  string                 `gorm:"primaryKey"                                   json:"id"`
-    TrackingPenawaranID string                 `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
-    TrackingPenawaran   TrackingPenawaran      `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
-    AccAdminDirektur    bool                   `gorm:"not null;default:false"                       json:"accAdminDirektur"`
-    AccManajerOps       bool                   `gorm:"not null;default:false"                       json:"accManajerOps"`
-    Status              StatusActivity         `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
-    LogAktivitas        []LogReviewInternal    `gorm:"serializer:json;default:'[]'"                 json:"logs"`
-    Dokumen             []PenawaranDokumen     `gorm:"foreignKey:ReviewInternalID"                  json:"dokumen,omitempty"`
-    CreatedAt           time.Time              `gorm:"index"                                        json:"createdAt"`
-    UpdatedAt           time.Time              `                                                     json:"updatedAt"`
+	ID                  string                 `gorm:"primaryKey"                                   json:"id"`
+	TrackingPenawaranID string                 `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran      `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+	ActivityAdminID     *string                `gorm:"index"                                        json:"activityAdminId,omitempty"`
+	ActivityAdmin       *Activity              `gorm:"foreignKey:ActivityAdminID;references:ID"     json:"activityAdmin,omitempty"`
+	AccAdminDirektur    bool                   `gorm:"not null;default:false"                       json:"accAdminDirektur"`
+	AccManajerOps       bool                   `gorm:"not null;default:false"                       json:"accManajerOps"`
+	Status              StatusActivity         `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+	LogAktivitas        []LogReviewInternal    `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+	Dokumen             []PenawaranDokumen     `gorm:"foreignKey:ReviewInternalID"                  json:"dokumen,omitempty"`
+	CreatedAt           time.Time              `gorm:"index"                                        json:"createdAt"`
+	UpdatedAt           time.Time              `                                                      json:"updatedAt"`
 }
 
 type PersetujuanManajemen struct {
-    ID                  string                     `gorm:"primaryKey"                                   json:"id"`
-    TrackingPenawaranID string                     `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
-    TrackingPenawaran   TrackingPenawaran          `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
-    AccDirekturKomisaris bool                      `gorm:"not null;default:false"                       json:"accDirekturKomisaris"`
-    Status              StatusActivity             `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
-    LogAktivitas        []LogPersetujuanManajemen  `gorm:"serializer:json;default:'[]'"                 json:"logs"`
-    Dokumen             []PenawaranDokumen         `gorm:"foreignKey:PersetujuanManajemenID"            json:"dokumen,omitempty"`
-    CreatedAt           time.Time                  `gorm:"index"                                        json:"createdAt"`
-    UpdatedAt           time.Time                  `                                                     json:"updatedAt"`
+    ID                   string                     `gorm:"primaryKey"                                   json:"id"`
+    TrackingPenawaranID  string                     `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+    TrackingPenawaran    TrackingPenawaran          `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+    AccDirekturKomisaris bool                       `gorm:"not null;default:false"                       json:"accDirekturKomisaris"`
+    Status               StatusActivity             `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+    LogAktivitas         []LogPersetujuanManajemen  `gorm:"serializer:json;default:'[]'"                 json:"logs"`
+    Dokumen              []PenawaranDokumen         `gorm:"foreignKey:PersetujuanManajemenID"            json:"dokumen,omitempty"`
+    ActivityAdminID      *string                    `gorm:"index"                                        json:"activityAdminId,omitempty"`
+    ActivityAdmin        *Activity                  `gorm:"foreignKey:ActivityAdminID;references:ID"     json:"activityAdmin,omitempty"`
+    CreatedAt            time.Time                  `gorm:"index"                                        json:"createdAt"`
+    UpdatedAt            time.Time                  `                                                     json:"updatedAt"`
 }
 
 // ─── Dokumen ──────────────────────────────────────────────────────────────────
