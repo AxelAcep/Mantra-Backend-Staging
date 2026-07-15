@@ -155,68 +155,7 @@ func UpdateStatusFollowUp(c echo.Context) error {
 	isMaster := roleStr == "MASTER"
 
 	// If stage is provided (legacy or Stage 2 transition by Admin Sekretariat)
-	if body.Stage != nil && *body.Stage == 2 {
-		isAdminSekertariat := divisiStr == "ADMIN_SEKERTARIAT"
-		if !isAdminSekertariat && !isManagerOps && !isMaster {
-			return c.JSON(http.StatusForbidden, map[string]string{
-				"error": "Hanya Admin Sekertariat, Manager Operasional, atau Master yang bisa menyelesaikan tahap ini.",
-			})
-		}
-		if followUp.Stage >= 2 {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": "Tahap 1 sudah selesai.",
-			})
-		}
-
-		// Update activity admin sekretariat ke DITERIMA (Selesai)
-		if followUp.ActivityAdminID != nil {
-			now := time.Now()
-			config.DB.Model(&models.Activity{}).
-				Where("id = ?", *followUp.ActivityAdminID).
-				Updates(map[string]interface{}{
-					"status":       models.StatusDiterima,
-					"waktu_submit": &now,
-				})
-		}
-
-		// Inisialisasi daily activity untuk Sales
-		salesID := followUp.TrackingPenawaran.MarketingID
-		var salesPegawai models.Pegawai
-		salesNama := "Sales"
-		if err := config.DB.First(&salesPegawai, "id = ?", salesID).Error; err == nil {
-			salesNama = salesPegawai.Nama
-		}
-
-		activitySalesID := generateActivityID()
-		perusahaanNama := followUp.TrackingPenawaran.Perusahaan.Nama
-		dailySales := models.Activity{
-			ID:            activitySalesID,
-			PegawaiID:     salesID,
-			TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
-			Perusahaan:    &perusahaanNama,
-			Kategori:      models.KategoriQuotation,
-			Judul:         "Follow up Feedback Penawaran - " + perusahaanNama,
-			Deskripsi:     "Melakukan follow up ke klien dan menunggu feedback dari klien untuk penawaran #" + followUp.TrackingPenawaran.NomorPenawaran,
-			WaktuMulai:    time.Now(),
-			TargetSelesai: time.Now().Add(48 * time.Hour), // Deadline 2 hari
-			Status:        models.StatusOnProgress,
-		}
-		if err := config.DB.Create(&dailySales).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": "Gagal membuat daily activity untuk sales.",
-			})
-		}
-
-		followUp.Stage = 2
-		followUp.ActivitySalesID = &activitySalesID
-		appendFollowUpLog(
-			&followUp,
-			"Kirim Penawaran Selesai",
-			"Dokumen penawaran lengkap telah terkirim. Progress dilanjutkan ke sales ("+salesNama+") untuk follow up dan feedback.",
-			pegawaiID,
-			namaPegawai,
-		)
-	} else if body.Status != "" {
+	if body.Status != "" {
 		// Handle status/approval changes
 		switch body.Status {
 		case "KONFIRMASI_SELESAI":
@@ -382,7 +321,7 @@ func UpdateStatusFollowUp(c echo.Context) error {
 func UploadDokumenFollowUp(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, _, _, ok := getFollowUpClaims(c)
+	pegawaiID, namaPegawai, divisiStr, roleStr, ok := getFollowUpClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -470,11 +409,22 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	}
 
 	filePath := "/uploads/" + newFilename
+	kategori := c.FormValue("kategori")
+
+	if kategori == "DOKUMEN_PO_PGA" || kategori == "DOKUMEN_PO_FINANCE" {
+		if divisiStr != "MAINTENANCE_PAC" && divisiStr != "MAINTENANCE_FIRE" && roleStr != "MASTER" && divisiStr != "MANAGER_OPERASIONAL" {
+			os.Remove(destPath)
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"message": "Anda tidak memiliki izin untuk mengunggah dokumen PO Khusus.",
+			})
+		}
+	}
 
 	dokumen := models.PenawaranDokumen{
 		ID:         uuid.New().String(),
 		NamaFile:   file.Filename,
 		Path:       filePath,
+		Kategori:   kategori,
 		UploadedBy: pegawaiID,
 		FollowUpID: &followUp.ID,
 		CreatedAt:  time.Now(),
@@ -489,6 +439,46 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	appendFollowUpLog(&followUp, "Upload Dokumen", "Menambahkan dokumen **"+file.Filename+"**", pegawaiID, namaPegawai)
 
 	config.DB.Preload("Pegawai").First(&dokumen, "id = ?", dokumen.ID)
+
+	// Auto-transition to StepImplementasi if both Admin Proyek PO documents are uploaded
+	if followUp.Stage == 3 && (kategori == "DOKUMEN_PO_PGA" || kategori == "DOKUMEN_PO_FINANCE") {
+		var allDocs []models.PenawaranDokumen
+		config.DB.Where("follow_up_id = ?", followUp.ID).Find(&allDocs)
+		
+		hasPGA := false
+		hasFinance := false
+		for _, d := range allDocs {
+			if d.Kategori == "DOKUMEN_PO_PGA" { hasPGA = true }
+			if d.Kategori == "DOKUMEN_PO_FINANCE" { hasFinance = true }
+		}
+		
+		if hasPGA && hasFinance {
+			followUp.Status = models.StatusSelesai
+			appendFollowUpLog(&followUp, "Follow Up Selesai", "Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.", "system", "System")
+			config.DB.Save(&followUp)
+			
+			// Update TrackingPenawaran step
+			config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", followUp.TrackingPenawaranID).
+				Update("step_saat_ini", models.StepImplementasi)
+				
+			// Create Implementasi entry
+			implementasi := models.Implementasi{
+				ID:                  uuid.New().String(),
+				TrackingPenawaranID: followUp.TrackingPenawaranID,
+				Status:              models.StatusOnProgress,
+			}
+			config.DB.Create(&implementasi)
+			
+			// Update ActivityAdminProyek status
+			if followUp.ActivityAdminProyekID != nil {
+				config.DB.Model(&models.Activity{}).Where("id = ?", *followUp.ActivityAdminProyekID).
+					Updates(map[string]interface{}{
+						"status": models.StatusSelesai,
+						"kpi":    "BAIK",
+					})
+			}
+		}
+	}
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "File berhasil diunggah",

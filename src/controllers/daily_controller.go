@@ -952,6 +952,120 @@ func KonfirmasiSelesai(c echo.Context) error {
 			return err
 		}
 
+		// Trigger otomatis untuk Step 5 (Follow Up Klien) jika activity ini milik Admin Sekretariat (Follow Up)
+		if req.Status == string(models.StatusDiterima) {
+			var followUp models.FollowUp
+			errFindFollowUp := tx.Where("activity_admin_id = ?", activityID).
+				Preload("TrackingPenawaran").
+				Preload("TrackingPenawaran.Perusahaan").
+				First(&followUp).Error
+
+			if errFindFollowUp != nil {
+				fmt.Printf("DEBUG: Activity %s is DITERIMA, but not found as FollowUp ActivityAdminID. Error: %v\n", activityID, errFindFollowUp)
+			} else {
+				fmt.Printf("DEBUG: Found FollowUp (ID: %s, Stage: %d) for Activity %s\n", followUp.ID, followUp.Stage, activityID)
+				if followUp.Stage == 1 {
+					salesID := followUp.TrackingPenawaran.MarketingID
+					var salesPegawai models.Pegawai
+					salesNama := "Sales"
+					if err := tx.First(&salesPegawai, "id = ?", salesID).Error; err == nil {
+						salesNama = salesPegawai.Nama
+					}
+
+					activitySalesID := generateActivityID()
+					perusahaanNama := followUp.TrackingPenawaran.Perusahaan.Nama
+					dailySales := models.Activity{
+						ID:            activitySalesID,
+						PegawaiID:     salesID,
+						TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
+						Perusahaan:    &perusahaanNama,
+						Kategori:      models.KategoriQuotation,
+						Judul:         "Follow up Feedback Penawaran - " + perusahaanNama,
+						Deskripsi:     "Melakukan follow up ke klien dan menunggu feedback dari klien untuk penawaran #" + followUp.TrackingPenawaran.NomorPenawaran,
+						WaktuMulai:    time.Now(),
+						TargetSelesai: time.Now().Add(48 * time.Hour), // Deadline 2 hari
+						Status:        models.StatusOnProgress,
+					}
+
+					errCreateSales := tx.Create(&dailySales).Error
+					if errCreateSales != nil {
+						return fmt.Errorf("gagal membuat daily activity sales: %v", errCreateSales)
+					}
+
+					followUp.Stage = 2
+					followUp.ActivitySalesID = &activitySalesID
+
+					logFollowUp := models.LogFollowUp{
+						Aksi:        "Kirim Penawaran Selesai",
+						Keterangan:  "Dokumen penawaran lengkap telah terkirim (Aktivitas Admin disetujui). Progress dilanjutkan ke sales (" + salesNama + ") untuk follow up dan feedback.",
+						PegawaiID:   activity.PegawaiID,
+						NamaPegawai: "System/Master",
+						CreatedAt:   time.Now(),
+					}
+					followUp.LogAktivitas = append(followUp.LogAktivitas, logFollowUp)
+					if errSave := tx.Omit("TrackingPenawaran", "Admin", "ActivityAdmin", "Sales", "ActivitySales", "Dokumen").Save(&followUp).Error; errSave != nil {
+						return fmt.Errorf("gagal menyimpan update FollowUp: %v", errSave)
+					}
+				}
+			}
+
+			// Trigger otomatis untuk Step 5 (Menunggu Feedback Customer) jika activity ini milik Sales (ActivitySalesID)
+			errFindSales := tx.Where("activity_sales_id = ?", activityID).
+				Preload("TrackingPenawaran").
+				Preload("TrackingPenawaran.Perusahaan").
+				First(&followUp).Error
+
+			if errFindSales == nil {
+				if followUp.Stage == 2 {
+					var adminProyek models.Pegawai
+					adminProyekNama := "Admin Proyek"
+					
+					// Find an Admin Proyek (for now, use MAINTENANCE_PAC)
+					errFindAdmin := tx.Where("divisi = ?", models.DivisiMaintenancePAC).First(&adminProyek).Error
+					if errFindAdmin == nil {
+						adminProyekNama = adminProyek.Nama
+					}
+
+					activityAdminProyekID := generateActivityID()
+					perusahaanNama := followUp.TrackingPenawaran.Perusahaan.Nama
+
+					dailyAdminProyek := models.Activity{
+						ID:            activityAdminProyekID,
+						PegawaiID:     adminProyek.ID,
+						TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
+						Perusahaan:    &perusahaanNama,
+						Kategori:      models.KategoriQuotation,
+						Judul:         "Upload Dokumen PO - " + perusahaanNama,
+						Deskripsi:     "Mengupload Dokumen PO untuk Admin PGA dan Finance terkait penawaran #" + followUp.TrackingPenawaran.NomorPenawaran,
+						WaktuMulai:    time.Now(),
+						TargetSelesai: time.Now().Add(24 * time.Hour), // Deadline 1 hari
+						Status:        models.StatusOnProgress,
+					}
+					
+					errCreateAdminProyek := tx.Create(&dailyAdminProyek).Error
+					if errCreateAdminProyek != nil {
+						return fmt.Errorf("gagal membuat daily activity admin proyek: %v", errCreateAdminProyek)
+					}
+
+					followUp.Stage = 3
+					followUp.Status = models.StatusOnProgress
+					followUp.ActivityAdminProyekID = &activityAdminProyekID
+					
+					logFollowUp := models.LogFollowUp{
+						Aksi:        "PO Diterima & Persiapan Dokumen",
+						Keterangan:  "Sales telah menerima PO. Dilanjutkan ke Admin Proyek (" + adminProyekNama + ") untuk mengupload Dokumen PO PGA & Finance.",
+						PegawaiID:   activity.PegawaiID,
+						NamaPegawai: "System/Master",
+						CreatedAt:   time.Now(),
+					}
+					followUp.LogAktivitas = append(followUp.LogAktivitas, logFollowUp)
+					if errSave := tx.Omit("TrackingPenawaran", "Admin", "ActivityAdmin", "Sales", "ActivitySales", "ActivityAdminProyek", "Dokumen").Save(&followUp).Error; errSave != nil {
+						return fmt.Errorf("gagal menyimpan update FollowUp: %v", errSave)
+					}
+				}
+			}
+		}
+
 		notif := models.Notifikasi{
 			ID:         fmt.Sprintf("NTF-KS-%s-%d", activityID, time.Now().UnixNano()),
 			PegawaiID:  activity.PegawaiID,

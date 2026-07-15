@@ -260,22 +260,22 @@ func AssignPreSales(c echo.Context) error {
 		nomorPO = *permintaanMasuk.TrackingPenawaran.NomorPO
 	}
 
-	dailyActivity := models.Activity{
-		ID:            generateActivityID(),
-		PegawaiID:     body.PreSalesID,
-		TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
-		Perusahaan:    &namaPerusahaan,
-		Kategori:      models.KategoriQuotation,
-		Judul:         "Penanganan Penawaran " + namaPerusahaan,
-		Deskripsi:     "Activity otomatis dari assign PreSales untuk penawaran #" + nomorPO,
-		WaktuMulai:    time.Now(),
-		TargetSelesai: time.Now().Add(24 * time.Hour),
-		Status:        models.StatusOnProgress,
-	}
+	// dailyActivity := models.Activity{
+	// 	ID:            generateActivityID(),
+	// 	PegawaiID:     body.PreSalesID,
+	// 	TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+	// 	Perusahaan:    &namaPerusahaan,
+	// 	Kategori:      models.KategoriQuotation,
+	// 	Judul:         "Penanganan Penawaran " + namaPerusahaan,
+	// 	Deskripsi:     "Activity otomatis dari assign PreSales untuk penawaran #" + nomorPO,
+	// 	WaktuMulai:    time.Now(),
+	// 	TargetSelesai: time.Now().Add(24 * time.Hour),
+	// 	Status:        models.StatusOnProgress,
+	// }
 	
-	if err := config.DB.Create(&dailyActivity).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
-	}
+	// if err := config.DB.Create(&dailyActivity).Error; err != nil {
+	// 	return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
+	// }
 
 	// 3. Cek apakah BoQ sudah ada, jika belum buat BoQ + Activity BoQ
 	var existingBoQ models.PenyusunanBoQ

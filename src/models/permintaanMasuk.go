@@ -177,6 +177,7 @@ type PenawaranDokumen struct {
 	ID                     string    `gorm:"primaryKey"     json:"id"`
 	NamaFile               string    `gorm:"not null"       json:"namaFile"`
 	Path                   string    `gorm:"not null"       json:"path"`
+	Kategori               string    `gorm:"size:100;default:''" json:"kategori"`
 	UploadedBy             string    `gorm:"not null;index" json:"uploadedBy"`
 	Pegawai                Pegawai   `gorm:"foreignKey:UploadedBy;references:ID"          json:"pegawai,omitempty"`
 
@@ -256,7 +257,9 @@ type FollowUp struct {
 	Sales               *Pegawai          `gorm:"foreignKey:SalesID;references:ID"             json:"sales,omitempty"`
 	ActivitySalesID     *string           `gorm:"index"                                        json:"activitySalesId,omitempty"`
 	ActivitySales       *Activity         `gorm:"foreignKey:ActivitySalesID;references:ID"     json:"activitySales,omitempty"`
-	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
+	ActivityAdminProyekID *string         `gorm:"index"                                        json:"activityAdminProyekId,omitempty"`
+	ActivityAdminProyek *Activity         `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
+	Status              StatusActivity    `gorm:"not null;default:'ON_PROGRESS'"               json:"status"`
 	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
 	LogAktivitas        []LogFollowUp     `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Dokumen             []PenawaranDokumen `gorm:"foreignKey:FollowUpID"                       json:"dokumen,omitempty"`
