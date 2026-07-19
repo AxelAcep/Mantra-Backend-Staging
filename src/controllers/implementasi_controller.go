@@ -14,7 +14,7 @@ import (
 	"mantra/src/models"
 )
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func getImplementasiClaims(c echo.Context) (pegawaiID, namaPegawai, roleStr, divisiStr string, ok bool) {
 	claims, valid := c.Get("user").(jwt.MapClaims)
@@ -71,7 +71,7 @@ func formatNumber(val float64) string {
 	return strings.Join(result, "") + decPart
 }
 
-func preloadImplementasi(trackingID string) (models.Implementasi, error) {
+func preloadImplementasi(trackingID string) (*models.Implementasi, error) {
 	var impl models.Implementasi
 	err := config.DB.
 		Where("tracking_penawaran_id = ?", trackingID).
@@ -81,10 +81,20 @@ func preloadImplementasi(trackingID string) (models.Implementasi, error) {
 		Preload("Dokumen").
 		Preload("Dokumen.Pegawai").
 		Preload("ActivityPembelian.Pegawai").
+		Preload("ActivityPembelian.Children").
+		Preload("ActivityPembelian.Children.Pegawai").
 		Preload("ActivityPengantaran.Pegawai").
+		Preload("ActivityPengantaran.Children").
+		Preload("ActivityPengantaran.Children.Pegawai").
 		Preload("ActivityInstalasi.Pegawai").
+		Preload("ActivityInstalasi.Children").
+		Preload("ActivityInstalasi.Children.Pegawai").
 		First(&impl).Error
-	return impl, err
+
+	if err != nil {
+		return nil, err
+	}
+	return &impl, nil
 }
 
 func appendImplementasiLog(impl *models.Implementasi, aksi, keterangan, pegawaiID, namaPegawai string) {
@@ -99,7 +109,19 @@ func appendImplementasiLog(impl *models.Implementasi, aksi, keterangan, pegawaiI
 	config.DB.Save(impl)
 }
 
-// ── GET /tracking-penawaran/:id/implementasi ──────────────────────────────────
+func getKadivPGA_ID() string {
+	var userPgaHead models.User
+	errFind := config.DB.Preload("Pegawai").
+		Joins("JOIN \"Pegawai\" ON \"Pegawai\".id = \"User\".pegawai_id").
+		Where("\"Pegawai\".divisi = ? AND \"User\".role = ?", models.DivisiProcurementGA, models.RoleSupervisi).
+		First(&userPgaHead).Error
+	if errFind == nil {
+		return userPgaHead.PegawaiID
+	}
+	return ""
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 func GetDetailImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -110,62 +132,12 @@ func GetDetailImplementasi(c echo.Context) error {
 
 	impl, err := preloadImplementasi(trackingID)
 	if err != nil {
-		// Auto-initialize Implementasi
 		var tracking models.TrackingPenawaran
 		if errDb := config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID).Error; errDb == nil {
-			// Create Activities
-			actPembelianID := uuid.New().String()
-			actPembelian := models.Activity{
-				ID:            actPembelianID,
-				PegawaiID:     pegawaiID,
-				TerkaitPO:     &tracking.NomorPenawaran,
-				Perusahaan:    &tracking.Perusahaan.Nama,
-				Kategori:      models.KategoriBillOfQuantity,
-				Judul:         "Pembelian Barang Proyek - " + tracking.Perusahaan.Nama,
-				Deskripsi:     "Melakukan pembelian barang proyek sesuai daftar untuk penawaran #" + tracking.NomorPenawaran,
-				WaktuMulai:    time.Now(),
-				TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-				Status:        models.StatusOnProgress,
-			}
-			config.DB.Create(&actPembelian)
-
-			actPengantaranID := uuid.New().String()
-			actPengantaran := models.Activity{
-				ID:            actPengantaranID,
-				PegawaiID:     pegawaiID,
-				TerkaitPO:     &tracking.NomorPenawaran,
-				Perusahaan:    &tracking.Perusahaan.Nama,
-				Kategori:      models.KategoriAkomodasiProject,
-				Judul:         "Pengantaran Barang Proyek - " + tracking.Perusahaan.Nama,
-				Deskripsi:     "Mengatur pengantaran logistik barang proyek untuk penawaran #" + tracking.NomorPenawaran,
-				WaktuMulai:    time.Now(),
-				TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-				Status:        models.StatusOnProgress,
-			}
-			config.DB.Create(&actPengantaran)
-
-			actInstalasiID := uuid.New().String()
-			actInstalasi := models.Activity{
-				ID:            actInstalasiID,
-				PegawaiID:     pegawaiID,
-				TerkaitPO:     &tracking.NomorPenawaran,
-				Perusahaan:    &tracking.Perusahaan.Nama,
-				Kategori:      models.KategoriMonitorProgress,
-				Judul:         "Instalasi dan Uji Coba Proyek - " + tracking.Perusahaan.Nama,
-				Deskripsi:     "Melakukan instalasi teknis dan uji coba perangkat di lokasi proyek untuk penawaran #" + tracking.NomorPenawaran,
-				WaktuMulai:    time.Now(),
-				TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-				Status:        models.StatusOnProgress,
-			}
-			config.DB.Create(&actInstalasi)
-
 			newImpl := models.Implementasi{
-				ID:                     uuid.New().String(),
-				TrackingPenawaranID:    trackingID,
-				Status:                 models.StatusOnProgress,
-				ActivityPembelianID:    &actPembelianID,
-				ActivityPengantaranID:  &actPengantaranID,
-				ActivityInstalasiID:    &actInstalasiID,
+				ID:                  uuid.New().String(),
+				TrackingPenawaranID: trackingID,
+				Status:              models.StatusOnProgress,
 				LogAktivitas: []models.LogImplementasi{
 					{
 						Aksi:        "Implementasi Dimulai",
@@ -186,71 +158,10 @@ func GetDetailImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
-	// Self-healing for existing records without Activities
-	updated := false
-	if impl.ActivityPembelianID == nil {
-		actPembelianID := uuid.New().String()
-		actPembelian := models.Activity{
-			ID:            actPembelianID,
-			PegawaiID:     pegawaiID,
-			TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
-			Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
-			Kategori:      models.KategoriBillOfQuantity,
-			Judul:         "Pembelian Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
-			Deskripsi:     "Melakukan pembelian barang proyek sesuai daftar untuk penawaran #" + impl.TrackingPenawaran.NomorPenawaran,
-			WaktuMulai:    time.Now(),
-			TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-			Status:        models.StatusOnProgress,
-		}
-		config.DB.Create(&actPembelian)
-		impl.ActivityPembelianID = &actPembelianID
-		updated = true
-	}
-	if impl.ActivityPengantaranID == nil {
-		actPengantaranID := uuid.New().String()
-		actPengantaran := models.Activity{
-			ID:            actPengantaranID,
-			PegawaiID:     pegawaiID,
-			TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
-			Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
-			Kategori:      models.KategoriAkomodasiProject,
-			Judul:         "Pengantaran Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
-			Deskripsi:     "Mengatur pengantaran logistik barang proyek untuk penawaran #" + impl.TrackingPenawaran.NomorPenawaran,
-			WaktuMulai:    time.Now(),
-			TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-			Status:        models.StatusOnProgress,
-		}
-		config.DB.Create(&actPengantaran)
-		impl.ActivityPengantaranID = &actPengantaranID
-		updated = true
-	}
-	if impl.ActivityInstalasiID == nil {
-		actInstalasiID := uuid.New().String()
-		actInstalasi := models.Activity{
-			ID:            actInstalasiID,
-			PegawaiID:     pegawaiID,
-			TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
-			Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
-			Kategori:      models.KategoriMonitorProgress,
-			Judul:         "Instalasi dan Uji Coba Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
-			Deskripsi:     "Melakukan instalasi teknis dan uji coba perangkat di lokasi proyek untuk penawaran #" + impl.TrackingPenawaran.NomorPenawaran,
-			WaktuMulai:    time.Now(),
-			TargetSelesai: time.Now().Add(7 * 24 * time.Hour),
-			Status:        models.StatusOnProgress,
-		}
-		config.DB.Create(&actInstalasi)
-		impl.ActivityInstalasiID = &actInstalasiID
-		updated = true
-	}
-	if updated {
-		config.DB.Save(&impl)
-		impl, _ = preloadImplementasi(trackingID)
-	}
-
 	return c.JSON(http.StatusOK, impl)
 }
 
-// ── PATCH /tracking-penawaran/:id/implementasi ───────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 func UpdateDetailImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -260,19 +171,20 @@ func UpdateDetailImplementasi(c echo.Context) error {
 	}
 
 	var body struct {
-		NoPO      string `json:"noPO"`
-		TanggalPO string `json:"tanggalPO"`
-		NoWO      string `json:"noWO"`
-		TanggalWO string `json:"tanggalWO"`
-		NoDO      string `json:"noDO"`
-		TanggalDO string `json:"tanggalDO"`
+		NoPO            string `json:"noPO"`
+		TanggalPO       string `json:"tanggalPO"`
+		NoWO            string `json:"noWO"`
+		TanggalWO       string `json:"tanggalWO"`
+		NoDO            string `json:"noDO"`
+		TanggalDO       string `json:"tanggalDO"`
+		WaktuPengerjaan string `json:"waktuPengerjaan"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
 
-	var impl models.Implementasi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&impl).Error; err != nil {
+	impl, err := preloadImplementasi(trackingID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
@@ -286,58 +198,89 @@ func UpdateDetailImplementasi(c echo.Context) error {
 	impl.TanggalWO = parseDate(body.TanggalWO)
 	impl.NoDO = body.NoDO
 	impl.TanggalDO = parseDate(body.TanggalDO)
+	impl.WaktuPengerjaan = parseDate(body.WaktuPengerjaan)
 	impl.UpdatedAt = time.Now()
 
-	if err := config.DB.Save(&impl).Error; err != nil {
+	if impl.NoPO != "" && impl.ActivityPembelianID == nil {
+		pgaHeadID := getKadivPGA_ID()
+		if pgaHeadID != "" {
+			actID := uuid.New().String()
+			act := models.Activity{
+				ID:            actID,
+				PegawaiID:     pgaHeadID,
+				TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
+				Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
+				Kategori:      models.KategoriBillOfQuantity,
+				Judul:         "Pembelian Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
+				WaktuMulai:    time.Now(),
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&act).Error; err == nil {
+				impl.ActivityPembelianID = &actID
+			}
+		}
+	}
+
+	if impl.NoWO != "" && impl.ActivityPengantaranID == nil {
+		pgaHeadID := getKadivPGA_ID()
+		if pgaHeadID != "" {
+			actID := uuid.New().String()
+			act := models.Activity{
+				ID:            actID,
+				PegawaiID:     pgaHeadID,
+				TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
+				Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
+				Kategori:      models.KategoriAkomodasiProject,
+				Judul:         "Pengantaran Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
+				WaktuMulai:    time.Now(),
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&act).Error; err == nil {
+				impl.ActivityPengantaranID = &actID
+			}
+		}
+	}
+
+	if impl.NoDO != "" && impl.ActivityInstalasiID == nil {
+		pgaHeadID := getKadivPGA_ID()
+		if pgaHeadID != "" {
+			actID := uuid.New().String()
+			act := models.Activity{
+				ID:            actID,
+				PegawaiID:     pgaHeadID,
+				TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
+				Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
+				Kategori:      models.KategoriMonitorProgress,
+				Judul:         "Instalasi dan Uji Coba Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama,
+				WaktuMulai:    time.Now(),
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&act).Error; err == nil {
+				impl.ActivityInstalasiID = &actID
+			}
+		}
+	}
+
+	if err := config.DB.Save(impl).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengupdate detail implementasi."})
 	}
 
-	// Update parent TrackingPenawaran NomorPO also for consistency
 	if body.NoPO != "" {
 		config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", trackingID).Update("nomor_po", body.NoPO)
 	}
 
 	var changes []string
 	if oldNoPO != body.NoPO {
-		o := oldNoPO
-		if o == "" {
-			o = "kosong"
-		}
-		n := body.NoPO
-		if n == "" {
-			n = "kosong"
-		}
-		changes = append(changes, fmt.Sprintf("No. Purchase Order diubah dari '%s' menjadi '%s'", o, n))
+		changes = append(changes, fmt.Sprintf("No. Purchase Order diubah dari '%s' menjadi '%s'", oldNoPO, body.NoPO))
 	}
 	if oldNoWO != body.NoWO {
-		o := oldNoWO
-		if o == "" {
-			o = "kosong"
-		}
-		n := body.NoWO
-		if n == "" {
-			n = "kosong"
-		}
-		changes = append(changes, fmt.Sprintf("No. Work Order diubah dari '%s' menjadi '%s'", o, n))
+		changes = append(changes, fmt.Sprintf("No. Work Order diubah dari '%s' menjadi '%s'", oldNoWO, body.NoWO))
 	}
 	if oldNoDO != body.NoDO {
-		o := oldNoDO
-		if o == "" {
-			o = "kosong"
-		}
-		n := body.NoDO
-		if n == "" {
-			n = "kosong"
-		}
-		changes = append(changes, fmt.Sprintf("No. Delivery Order diubah dari '%s' menjadi '%s'", o, n))
+		changes = append(changes, fmt.Sprintf("No. Delivery Order diubah dari '%s' menjadi '%s'", oldNoDO, body.NoDO))
 	}
 
-	keterangan := "Memperbarui data No PO/WO/DO"
-	if len(changes) > 0 {
-		keterangan = strings.Join(changes, ", ")
-	}
-
-	appendImplementasiLog(&impl, "Update Info Order", keterangan, pegawaiID, namaPegawai)
+	appendImplementasiLog(impl, "Update Info Order", strings.Join(changes, ", "), pegawaiID, namaPegawai)
 
 	updated, _ := preloadImplementasi(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -346,7 +289,7 @@ func UpdateDetailImplementasi(c echo.Context) error {
 	})
 }
 
-// ── POST /tracking-penawaran/:id/implementasi/barang ─────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 func AddBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -355,8 +298,8 @@ func AddBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
 
-	var impl models.Implementasi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&impl).Error; err != nil {
+	impl, err := preloadImplementasi(trackingID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
@@ -391,7 +334,7 @@ func AddBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menambahkan barang."})
 	}
 
-	appendImplementasiLog(&impl, "Tambah Barang", fmt.Sprintf("Menambahkan barang baru dengan nama '%s' (Status: %s, Qty: %s %s, Harga: Rp %s, Metode: %s)", body.NamaBarang, body.Status, formatNumber(body.Qty), body.Satuan, formatNumber(body.HargaSatuan), body.Metode), pegawaiID, namaPegawai)
+	appendImplementasiLog(impl, "Tambah Barang", fmt.Sprintf("Menambahkan barang baru dengan nama '%s' (Status: %s, Qty: %s %s, Harga: Rp %s, Metode: %s)", body.NamaBarang, body.Status, formatNumber(body.Qty), body.Satuan, formatNumber(body.HargaSatuan), body.Metode), pegawaiID, namaPegawai)
 
 	updated, _ := preloadImplementasi(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -400,7 +343,7 @@ func AddBarangImplementasi(c echo.Context) error {
 	})
 }
 
-// ── PATCH /tracking-penawaran/:id/implementasi/barang/:barangId ──────────────
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 func UpdateBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -410,8 +353,8 @@ func UpdateBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
 
-	var impl models.Implementasi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&impl).Error; err != nil {
+	impl, err := preloadImplementasi(trackingID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
@@ -482,8 +425,7 @@ func UpdateBarangImplementasi(c echo.Context) error {
 	if len(changes) > 0 {
 		keterangan = fmt.Sprintf("Memperbarui barang '%s' (%s)", barang.NamaBarang, strings.Join(changes, ", "))
 	}
-
-	appendImplementasiLog(&impl, "Update Barang", keterangan, pegawaiID, namaPegawai)
+	appendImplementasiLog(impl, "Update Barang", keterangan, pegawaiID, namaPegawai)
 
 	updated, _ := preloadImplementasi(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -492,7 +434,7 @@ func UpdateBarangImplementasi(c echo.Context) error {
 	})
 }
 
-// ── DELETE /tracking-penawaran/:id/implementasi/barang/:barangId ─────────────
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 func DeleteBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -502,8 +444,8 @@ func DeleteBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
 
-	var impl models.Implementasi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&impl).Error; err != nil {
+	impl, err := preloadImplementasi(trackingID)
+	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
@@ -517,11 +459,129 @@ func DeleteBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghapus barang."})
 	}
 
-	appendImplementasiLog(&impl, "Hapus Barang", fmt.Sprintf("Menghapus barang '%s' dari daftar pembelian barang proyek", namaBarang), pegawaiID, namaPegawai)
+	appendImplementasiLog(impl, "Hapus Barang", fmt.Sprintf("Menghapus barang '%s'", namaBarang), pegawaiID, namaPegawai)
 
 	updated, _ := preloadImplementasi(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Barang berhasil dihapus.",
+		"data":    updated,
+	})
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+func AssignPGAStaff(c echo.Context) error {
+	trackingID := c.Param("id")
+	pegawaiID, namaPegawai, roleStr, _, ok := getImplementasiClaims(c)
+	if !ok || roleStr != string(models.RoleSupervisi) {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	impl, err := preloadImplementasi(trackingID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
+	}
+
+	var req struct {
+		StaffIDs []string `json:"staffIds"`
+		Phase    string   `json:"phase"` // "pembelian", "pengantaran", "instalasi"
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+	}
+
+	var parentID *string
+	var activityName string
+	var activityJudul string
+	var parentActivity *models.Activity
+	var deskripsi string
+
+	switch req.Phase {
+	case "pengantaran":
+		parentID = impl.ActivityPengantaranID
+		activityName = "Pengantaran"
+		parentActivity = impl.ActivityPengantaran
+		activityJudul = "Pengantaran Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama
+		deskripsi = "Pengantaran Barang ke " + impl.TrackingPenawaran.Perusahaan.Nama
+	case "instalasi":
+		parentID = impl.ActivityInstalasiID
+		activityName = "Instalasi"
+		parentActivity = impl.ActivityInstalasi
+		activityJudul = "Instalasi Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama
+		deskripsi = "Melakukan instalasi di lokasi proyek " + impl.TrackingPenawaran.Perusahaan.Nama
+	default:
+		parentID = impl.ActivityPembelianID
+		activityName = "Pembelian"
+		parentActivity = impl.ActivityPembelian
+		activityJudul = "Pengecekan Barang Proyek - " + impl.TrackingPenawaran.Perusahaan.Nama
+		deskripsi = "Pengecekan barang untuk penawaran #" + impl.TrackingPenawaran.NomorPenawaran
+		if parentActivity != nil && parentActivity.Deskripsi != "" {
+			deskripsi = parentActivity.Deskripsi
+		}
+
+		var items []string
+		for _, b := range impl.Barang {
+			items = append(items, fmt.Sprintf("%s (%d %s)", b.NamaBarang, int(b.Qty), b.Satuan))
+		}
+		if len(items) > 0 {
+			deskripsi += "\n\nDaftar Barang:\n- " + strings.Join(items, "\n- ")
+		}
+	}
+
+	if parentID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Activity %s belum dibuat.", activityName)})
+	}
+
+	var targetSelesai time.Time
+	if parentActivity != nil {
+		targetSelesai = parentActivity.TargetSelesai
+	}
+
+	var assignedNames []string
+	for _, staffID := range req.StaffIDs {
+		var count int64
+		config.DB.Model(&models.Activity{}).Where("parent_id = ? AND pegawai_id = ?", *parentID, staffID).Count(&count)
+		if count > 0 {
+			continue
+		}
+
+		var staff models.Pegawai
+		if err := config.DB.First(&staff, "id = ?", staffID).Error; err != nil {
+			continue
+		}
+
+		childActivityID := uuid.New().String()
+		childActivity := models.Activity{
+			ID:            childActivityID,
+			PegawaiID:     staffID,
+			ParentID:      parentID,
+			TerkaitPO:     &impl.TrackingPenawaran.NomorPenawaran,
+			Perusahaan:    &impl.TrackingPenawaran.Perusahaan.Nama,
+			Kategori:      models.KategoriBillOfQuantity,
+			Judul:         activityJudul,
+			Deskripsi:     deskripsi,
+			WaktuMulai:    time.Now(),
+			TargetSelesai: targetSelesai,
+			Status:        models.StatusOnProgress,
+		}
+
+		if err := config.DB.Create(&childActivity).Error; err == nil {
+			assignedNames = append(assignedNames, staff.Nama)
+		} else {
+			fmt.Println("Error creating child activity:", err)
+		}
+	}
+
+	if len(assignedNames) > 0 {
+		keterangan := fmt.Sprintf("Menugaskan staff PGA untuk %s: %s", activityName, strings.Join(assignedNames, ", "))
+		appendImplementasiLog(impl, "Assign Staff PGA", keterangan, pegawaiID, namaPegawai)
+	} else {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menugaskan staff PGA (mungkin sudah ditugaskan sebelumnya)."})
+	}
+
+	updated, _ := preloadImplementasi(trackingID)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Staff PGA berhasil ditugaskan.",
 		"data":    updated,
 	})
 }

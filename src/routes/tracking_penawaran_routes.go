@@ -74,6 +74,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.POST("/:id/implementasi/barang", controllers.AddBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/implementasi/barang/:barangId", controllers.UpdateBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/:id/implementasi/barang/:barangId", controllers.DeleteBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/implementasi/assign-pga", controllers.AssignPGAStaff, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// ── 6. DYNAMIC GENERAL /:id (Taruh paling bawah di grup ini) ────────────
 	g.GET("/:id", controllers.GetDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))

@@ -300,6 +300,7 @@ type Implementasi struct {
 	TanggalWO           *time.Time        `                                                    json:"tanggalWO,omitempty"`
 	NoDO                string            `gorm:"default:''"                                   json:"noDO"`
 	TanggalDO           *time.Time        `                                                    json:"tanggalDO,omitempty"`
+	WaktuPengerjaan     *time.Time        `                                                    json:"waktuPengerjaan,omitempty"`
 	Status              StatusActivity    `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
 	LogAktivitas        []LogImplementasi `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Barang              []ImplementasiBarang `gorm:"foreignKey:ImplementasiID"                json:"barang,omitempty"`

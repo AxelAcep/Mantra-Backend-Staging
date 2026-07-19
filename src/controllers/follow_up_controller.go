@@ -259,7 +259,7 @@ func UpdateStatusFollowUp(c echo.Context) error {
 			followUp.Status = models.StatusPerluTindakan
 			appendFollowUpLog(
 				&followUp,
-				"Feedback Customer Perlu Tindakan: " + body.Alasan,
+				"Feedback Customer Perlu Tindakan: "+body.Alasan,
 				body.Alasan,
 				pegawaiID,
 				namaPegawai,
@@ -321,7 +321,7 @@ func UpdateStatusFollowUp(c echo.Context) error {
 func UploadDokumenFollowUp(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, divisiStr, roleStr, ok := getFollowUpClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -444,23 +444,27 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	if followUp.Stage == 3 && (kategori == "DOKUMEN_PO_PGA" || kategori == "DOKUMEN_PO_FINANCE") {
 		var allDocs []models.PenawaranDokumen
 		config.DB.Where("follow_up_id = ?", followUp.ID).Find(&allDocs)
-		
+
 		hasPGA := false
 		hasFinance := false
 		for _, d := range allDocs {
-			if d.Kategori == "DOKUMEN_PO_PGA" { hasPGA = true }
-			if d.Kategori == "DOKUMEN_PO_FINANCE" { hasFinance = true }
+			if d.Kategori == "DOKUMEN_PO_PGA" {
+				hasPGA = true
+			}
+			if d.Kategori == "DOKUMEN_PO_FINANCE" {
+				hasFinance = true
+			}
 		}
-		
+
 		if hasPGA && hasFinance {
 			followUp.Status = models.StatusSelesai
 			appendFollowUpLog(&followUp, "Follow Up Selesai", "Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.", "system", "System")
 			config.DB.Save(&followUp)
-			
+
 			// Update TrackingPenawaran step
 			config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", followUp.TrackingPenawaranID).
 				Update("step_saat_ini", models.StepImplementasi)
-				
+
 			// Create Implementasi entry
 			implementasi := models.Implementasi{
 				ID:                  uuid.New().String(),
@@ -468,7 +472,7 @@ func UploadDokumenFollowUp(c echo.Context) error {
 				Status:              models.StatusOnProgress,
 			}
 			config.DB.Create(&implementasi)
-			
+
 			// Update ActivityAdminProyek status
 			if followUp.ActivityAdminProyekID != nil {
 				config.DB.Model(&models.Activity{}).Where("id = ?", *followUp.ActivityAdminProyekID).
