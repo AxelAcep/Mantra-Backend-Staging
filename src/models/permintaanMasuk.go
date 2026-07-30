@@ -322,7 +322,7 @@ type ImplementasiBarang struct {
 	ID                  string     `gorm:"primaryKey"         json:"id"`
 	ImplementasiID      string     `gorm:"not null;index"     json:"implementasiId"`
 	NamaBarang          string     `gorm:"not null"           json:"namaBarang"`
-	Status              string     `gorm:"not null"           json:"status"` // "Ready" | "Perlu Beli"
+	Status              string     `gorm:"not null"           json:"status"` // "Ready" | "Perlu Beli | "Indent | "PO" | "Pending" | "Pengiriman" 
 	Qty                 float64    `gorm:"not null"           json:"qty"`
 	Satuan              string     `gorm:"not null"           json:"satuan"`
 	HargaSatuan         float64    `gorm:"not null"           json:"hargaSatuan"`

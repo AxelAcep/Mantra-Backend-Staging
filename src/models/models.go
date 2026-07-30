@@ -25,6 +25,7 @@ const (
 	DivisiDirektur           Divisi = "DIREKTUR"
 	DivisiSekertaris         Divisi = "SEKERTARIS"
 	DivisiAdminSekertariat   Divisi = "ADMIN_SEKERTARIAT"
+	DivisiAdminSekertaris    Divisi = "ADMIN_SEKERTARIS"
 	DivisiManagerOperasional Divisi = "MANAGER_OPERASIONAL"
 	DivisiMonitoringControl  Divisi = "MONITORING_CONTROL_ADVISOR"
 	DivisiProcurementGA      Divisi = "PROCUREMENT_GA"

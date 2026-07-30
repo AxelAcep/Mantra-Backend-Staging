@@ -40,6 +40,7 @@ func preloadFollowUp(trackingID string) (models.FollowUp, error) {
 		Preload("Sales").
 		Preload("ActivityAdmin.Pegawai").
 		Preload("ActivitySales.Pegawai").
+		Preload("ActivityAdminProyek.Pegawai").
 		Preload("Dokumen").
 		Preload("Dokumen.Pegawai").
 		First(&followUp).Error
@@ -97,6 +98,7 @@ func GetDetailFollowUp(c echo.Context) error {
 					ActivityAdminID:     &activityID,
 					SalesID:             &tracking.MarketingID,
 					ActivitySalesID:     nil,
+					ActivityAdminProyekID: &activityID,
 					Status:              models.StatusOnProgress,
 					Stage:               1,
 					LogAktivitas: []models.LogFollowUp{
@@ -412,7 +414,7 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	kategori := c.FormValue("kategori")
 
 	if kategori == "DOKUMEN_PO_PGA" || kategori == "DOKUMEN_PO_FINANCE" {
-		if divisiStr != "MAINTENANCE_PAC" && divisiStr != "MAINTENANCE_FIRE" && roleStr != "MASTER" && divisiStr != "MANAGER_OPERASIONAL" {
+		if divisiStr != "MAINTENANCE_PAC" && divisiStr != "MAINTENANCE_FIRE" && roleStr != "MASTER" && divisiStr != "MANAGER_OPERASIONAL" && divisiStr != "MONITORING_CONTROL_ADVISOR" {
 			os.Remove(destPath)
 			return c.JSON(http.StatusForbidden, map[string]string{
 				"message": "Anda tidak memiliki izin untuk mengunggah dokumen PO Khusus.",
@@ -456,32 +458,68 @@ func UploadDokumenFollowUp(c echo.Context) error {
 			}
 		}
 
-		if hasPGA && hasFinance {
-			followUp.Status = models.StatusSelesai
-			appendFollowUpLog(&followUp, "Follow Up Selesai", "Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.", "system", "System")
-			config.DB.Save(&followUp)
+	if hasPGA && hasFinance {
+		followUp.Status = models.StatusSelesai
+		appendFollowUpLog(&followUp, "Follow Up Selesai", "Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.", "system", "System")
+		config.DB.Save(&followUp)
 
-			// Update TrackingPenawaran step
-			config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", followUp.TrackingPenawaranID).
-				Update("step_saat_ini", models.StepImplementasi)
+		// Update TrackingPenawaran step
+		config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", followUp.TrackingPenawaranID).
+			Update("step_saat_ini", models.StepImplementasi)
 
-			// Create Implementasi entry
-			implementasi := models.Implementasi{
-				ID:                  uuid.New().String(),
-				TrackingPenawaranID: followUp.TrackingPenawaranID,
-				Status:              models.StatusOnProgress,
-			}
-			config.DB.Create(&implementasi)
-
-			// Update ActivityAdminProyek status
-			if followUp.ActivityAdminProyekID != nil {
-				config.DB.Model(&models.Activity{}).Where("id = ?", *followUp.ActivityAdminProyekID).
-					Updates(map[string]interface{}{
-						"status": models.StatusSelesai,
-						"kpi":    "BAIK",
-					})
-			}
+		// Cari Supervisor PROCUREMENT_GA pertama untuk auto-assign activity pembelian barang
+		var pgaSupervisor models.Pegawai
+		if err := config.DB.
+			Joins(`JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
+			Where(`"Pegawai".divisi = ? AND "User".role = ?`, models.DivisiProcurementGA, models.RoleSupervisi).
+			First(&pgaSupervisor).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"message": "Tidak ditemukan Supervisor Procurement GA, gagal membuat Implementasi",
+			})
 		}
+
+		// 1. Bikin Activity Pembelian Barang dulu
+		activityPembelianID := uuid.NewString()
+		activityPembelian := models.Activity{
+			ID:            activityPembelianID,
+			PegawaiID:     pgaSupervisor.ID,
+			Kategori:      models.KategoriAkomodasiProject,
+			Judul:         "Pembelian Barang Implementasi",
+			Deskripsi:     "Activity otomatis pembelian barang untuk tahap Implementasi",
+			WaktuMulai:    time.Now(),
+			TargetSelesai: time.Now().AddDate(0, 0, 2),
+			Status:        models.StatusOnProgress,
+		}
+		if err := config.DB.Create(&activityPembelian).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"message": "Gagal membuat Activity Pembelian Barang: " + err.Error(),
+			})
+		}
+
+		// 2. Baru bikin Implementasi dengan ActivityPembelianID langsung terisi
+		implementasi := models.Implementasi{
+			ID:                  uuid.New().String(),
+			TrackingPenawaranID: followUp.TrackingPenawaranID,
+			Status:              models.StatusOnProgress,
+			ActivityPembelianID: &activityPembelianID,
+		}
+		if err := config.DB.Create(&implementasi).Error; err != nil {
+			// Rollback: hapus activity yang barusan dibuat
+			config.DB.Delete(&models.Activity{}, "id = ?", activityPembelianID)
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"message": "Gagal membuat Implementasi: " + err.Error(),
+			})
+		}
+
+		// Update ActivityAdminProyek status
+		if followUp.ActivityAdminProyekID != nil {
+			config.DB.Model(&models.Activity{}).Where("id = ?", *followUp.ActivityAdminProyekID).
+				Updates(map[string]interface{}{
+					"status": models.StatusSelesai,
+					"kpi":    "BAIK",
+				})
+		}
+	}
 	}
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
@@ -550,4 +588,113 @@ func appendFollowUpLog(followUp *models.FollowUp, aksi, keterangan, pegawaiID, n
 	}
 	followUp.LogAktivitas = append(followUp.LogAktivitas, log)
 	config.DB.Save(followUp)
+}
+
+// ============================================
+// 1. GET Pegawai (RoleSupervisi + Divisi Maintenance PAC/Fire)
+// ============================================
+func GetPegawaiSupervisiMaintenance(c echo.Context) error {
+	type PegawaiSimple struct {
+		PegawaiID string `json:"pegawaiId"`
+		Nama      string `json:"nama"`
+	}
+
+	var pegawaiIDs []string
+	if err := config.DB.
+		Model(&models.User{}).
+		Where("role = ?", models.RoleSupervisi).
+		Pluck("pegawai_id", &pegawaiIDs).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data user."})
+	}
+
+	var result []PegawaiSimple
+	if err := config.DB.
+		Model(&models.Pegawai{}).
+		Select("id as pegawai_id, nama as nama").
+		Where("id IN ?", pegawaiIDs).
+		Where("divisi IN ?", []models.Divisi{models.DivisiMaintenancePAC, models.DivisiMaintenanceFire}).
+		Where("deleted_at IS NULL").
+		Scan(&result).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data pegawai."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"data": result})
+}
+
+// ============================================
+// 2. Assign Admin Proyek
+// ============================================
+func AssignAdminProyek(c echo.Context) error {
+	var body struct {
+		FollowUpID string `json:"followUpId"`
+		PegawaiID  string `json:"pegawaiId"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
+	if body.FollowUpID == "" || body.PegawaiID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "FollowUpID dan PegawaiID wajib diisi."})
+	}
+
+	var followUp models.FollowUp
+	if err := config.DB.
+		Preload("TrackingPenawaran").
+		Where("id = ?", body.FollowUpID).
+		First(&followUp).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	var pegawai models.Pegawai
+	if err := config.DB.Where("id = ?", body.PegawaiID).First(&pegawai).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
+	}
+
+	nomorPO := followUp.TrackingPenawaran.NomorPenawaran
+	if followUp.TrackingPenawaran.NomorPO != nil && *followUp.TrackingPenawaran.NomorPO != "" {
+		nomorPO = *followUp.TrackingPenawaran.NomorPO
+	}
+
+	now := time.Now()
+	deadline := now.Add(24 * time.Hour)
+
+	tx := config.DB.Begin()
+	if tx.Error != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal memulai transaksi."})
+	}
+
+	activity := models.Activity{
+		ID:            uuid.New().String(),
+		PegawaiID:     body.PegawaiID,
+		TerkaitPO:     &nomorPO,
+		Kategori:      models.KategoriDokumenPendukung,
+		Judul:         "Upload Dokumen PO",
+		Deskripsi:     "Mengunggah Dokumen PO untuk PGA dan Finance terkait penawaran " + nomorPO,
+		WaktuMulai:    now,
+		TargetSelesai: deadline,
+		Status:        models.StatusOnProgress,
+	}
+
+	if err := tx.Create(&activity).Error; err != nil {
+		tx.Rollback()
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Daily Activity."})
+	}
+
+	if err := tx.Model(&models.FollowUp{}).
+		Where("id = ?", body.FollowUpID).
+		Update("activity_admin_proyek_id", activity.ID).Error; err != nil {
+		tx.Rollback()
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update Follow Up."})
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal commit transaksi."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Admin Proyek berhasil ditugaskan.",
+		"data": map[string]interface{}{
+			"activityId": activity.ID,
+			"followUpId": followUp.ID,
+		},
+	})
 }

@@ -61,6 +61,8 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.POST("/:id/follow-up/dokumen", controllers.UploadDokumenFollowUp, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/:id/follow-up/dokumen/:dokumenId", controllers.DeleteDokumenFollowUp, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/follow-up/status", controllers.UpdateStatusFollowUp, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.GET("/pegawai/admin-proyek", controllers.GetPegawaiSupervisiMaintenance, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/follow-up/admin-proyek", controllers.AssignAdminProyek, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// Accounting
 	g.GET("/:id/accounting", controllers.GetAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))

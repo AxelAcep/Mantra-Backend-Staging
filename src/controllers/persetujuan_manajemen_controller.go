@@ -110,7 +110,7 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 
 		// --- Buat Daily untuk Admin Sekertariat ---
 		var adminPegawai models.Pegawai
-		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
+		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminPegawai).Error; err != nil {
 			// fallback ke pegawai yang sedang login
 			adminPegawai.ID = pegawaiID
 			adminPegawai.Nama = namaPegawai
