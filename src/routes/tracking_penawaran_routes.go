@@ -83,4 +83,8 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.PATCH("/:id/detail", controllers.UpdateDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/presales", controllers.AssignPreSales, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	g.PATCH("/:id/status", controllers.UpdateStatusPermintaanMasuk, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	// BAST
+	g.GET("/:id/bast", controllers.GetDetailBast, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/bast", controllers.UpdateDetailBast, middleware.VerifyToken, middleware.AuthorizeRole(3))
 }
