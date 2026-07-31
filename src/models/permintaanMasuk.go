@@ -96,6 +96,7 @@ type TrackingPenawaran struct {
 	FollowUp             *FollowUp             `gorm:"foreignKey:TrackingPenawaranID" json:"followUp,omitempty"`
 	Implementasi         *Implementasi         `gorm:"foreignKey:TrackingPenawaranID" json:"implementasi,omitempty"`
 	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
+	Bast 				 *Bast `gorm:"foreignKey:TrackingPenawaranID" json:"bast,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
 
@@ -330,6 +331,38 @@ type ImplementasiBarang struct {
 	EstimasiKedatangan  *time.Time `                         json:"estimasiKedatangan,omitempty"`
 	CreatedAt           time.Time  `gorm:"index"              json:"createdAt"`
 	UpdatedAt           time.Time  `                          json:"updatedAt"`
+}
+
+// ─── Log BAST ─────────────────────────────────────────────────────────────────
+
+type LogBast struct {
+	Aksi        string    `json:"aksi"`
+	Keterangan  string    `json:"keterangan"`
+	PegawaiID   string    `json:"pegawaiId"`
+	NamaPegawai string    `json:"namaPegawai"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// ─── BAST (Berita Acara Serah Terima) ──────────────────────────────────────────
+
+type Bast struct {
+	ID                  string            `gorm:"primaryKey"                                   json:"id"`
+	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+
+	NoReferensi         string     `gorm:"default:''"                                   json:"noReferensi"`
+	TanggalTerbit       *time.Time `                                                    json:"tanggalTerbit,omitempty"`
+	TanggalSerahTerima  *time.Time `                                                    json:"tanggalSerahTerima,omitempty"`
+
+	Status       StatusActivity `gorm:"not null;default:ON_PROGRESS;index" json:"status"`
+	LogAktivitas []LogBast      `gorm:"serializer:json;default:'[]'"       json:"logs"`
+
+	// Daily Activities
+	ActivityAdminProyekID *string   `gorm:"index"                                          json:"activityAdminProyekId,omitempty"`
+	ActivityAdminProyek   *Activity `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
+
+	CreatedAt time.Time `gorm:"index" json:"createdAt"`
+	UpdatedAt time.Time `             json:"updatedAt"`
 }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────

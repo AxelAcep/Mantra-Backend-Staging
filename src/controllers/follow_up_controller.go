@@ -458,68 +458,106 @@ func UploadDokumenFollowUp(c echo.Context) error {
 			}
 		}
 
-	if hasPGA && hasFinance {
-		followUp.Status = models.StatusSelesai
-		appendFollowUpLog(&followUp, "Follow Up Selesai", "Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.", "system", "System")
-		config.DB.Save(&followUp)
+		if hasPGA && hasFinance {
+			followUp.Status = models.StatusSelesai
 
-		// Update TrackingPenawaran step
-		config.DB.Model(&models.TrackingPenawaran{}).Where("id = ?", followUp.TrackingPenawaranID).
-			Update("step_saat_ini", models.StepImplementasi)
+			appendFollowUpLog(
+				&followUp,
+				"Follow Up Selesai",
+				"Semua dokumen PO telah diunggah oleh Admin Proyek. Melanjutkan ke tahap Implementasi.",
+				"system",
+				"System",
+			)
 
-		// Cari Supervisor PROCUREMENT_GA pertama untuk auto-assign activity pembelian barang
-		var pgaSupervisor models.Pegawai
-		if err := config.DB.
-			Joins(`JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
-			Where(`"Pegawai".divisi = ? AND "User".role = ?`, models.DivisiProcurementGA, models.RoleSupervisi).
-			First(&pgaSupervisor).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"message": "Tidak ditemukan Supervisor Procurement GA, gagal membuat Implementasi",
-			})
-		}
+			config.DB.Save(&followUp)
 
-		// 1. Bikin Activity Pembelian Barang dulu
-		activityPembelianID := uuid.NewString()
-		activityPembelian := models.Activity{
-			ID:            activityPembelianID,
-			PegawaiID:     pgaSupervisor.ID,
-			Kategori:      models.KategoriAkomodasiProject,
-			Judul:         "Pembelian Barang Implementasi",
-			Deskripsi:     "Activity otomatis pembelian barang untuk tahap Implementasi",
-			WaktuMulai:    time.Now(),
-			TargetSelesai: time.Now().AddDate(0, 0, 2),
-			Status:        models.StatusOnProgress,
-		}
-		if err := config.DB.Create(&activityPembelian).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"message": "Gagal membuat Activity Pembelian Barang: " + err.Error(),
-			})
-		}
+			// Update TrackingPenawaran step
+			config.DB.
+				Model(&models.TrackingPenawaran{}).
+				Where("id = ?", followUp.TrackingPenawaranID).
+				Update("step_saat_ini", models.StepImplementasi)
 
-		// 2. Baru bikin Implementasi dengan ActivityPembelianID langsung terisi
-		implementasi := models.Implementasi{
-			ID:                  uuid.New().String(),
-			TrackingPenawaranID: followUp.TrackingPenawaranID,
-			Status:              models.StatusOnProgress,
-			ActivityPembelianID: &activityPembelianID,
-		}
-		if err := config.DB.Create(&implementasi).Error; err != nil {
-			// Rollback: hapus activity yang barusan dibuat
-			config.DB.Delete(&models.Activity{}, "id = ?", activityPembelianID)
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"message": "Gagal membuat Implementasi: " + err.Error(),
-			})
-		}
+			// Cari Supervisor PROCUREMENT_GA pertama untuk auto-assign
+			// Activity Pembelian Barang
+			var pgaSupervisor models.Pegawai
 
-		// Update ActivityAdminProyek status
-		if followUp.ActivityAdminProyekID != nil {
-			config.DB.Model(&models.Activity{}).Where("id = ?", *followUp.ActivityAdminProyekID).
-				Updates(map[string]interface{}{
-					"status": models.StatusSelesai,
-					"kpi":    "BAIK",
+			if err := config.DB.
+				Joins(`JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
+				Where(
+					`"Pegawai".divisi = ? AND "User".role = ?`,
+					models.DivisiProcurementGA,
+					models.RoleSupervisi,
+				).
+				First(&pgaSupervisor).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"message": "Tidak ditemukan Supervisor Procurement GA, gagal membuat Implementasi",
 				})
+			}
+
+			// 1. Create Implementasi terlebih dahulu
+			implementasi := models.Implementasi{
+				ID:                  uuid.New().String(),
+				TrackingPenawaranID: followUp.TrackingPenawaranID,
+				Status:              models.StatusOnProgress,
+			}
+
+			if err := config.DB.Create(&implementasi).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"message": "Gagal membuat Implementasi: " + err.Error(),
+				})
+			}
+
+			// 2. Setelah Implementasi berhasil dibuat,
+			//    create Activity Pembelian Barang untuk Supervisor PGA
+			activityPembelianID := uuid.NewString()
+
+			activityPembelian := models.Activity{
+				ID:            activityPembelianID,
+				PegawaiID:     pgaSupervisor.ID,
+				Kategori:      models.KategoriAkomodasiProject,
+				Judul:         "Pembelian Barang Implementasi",
+				Deskripsi:     "Activity otomatis pembelian barang untuk tahap Implementasi",
+				WaktuMulai:    time.Now(),
+				TargetSelesai: time.Now().AddDate(0, 0, 2),
+				Status:        models.StatusOnProgress,
+			}
+
+			if err := config.DB.Create(&activityPembelian).Error; err != nil {
+				// Rollback Implementasi jika Activity gagal dibuat
+				config.DB.Delete(&models.Implementasi{}, "id = ?", implementasi.ID)
+
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"message": "Gagal membuat Activity Pembelian Barang: " + err.Error(),
+				})
+			}
+
+			// 3. Simpan ActivityPembelianID ke Implementasi
+			if err := config.DB.
+				Model(&models.Implementasi{}).
+				Where("id = ?", implementasi.ID).
+				Update("activity_pembelian_id", activityPembelianID).Error; err != nil {
+
+				// Rollback Activity + Implementasi jika gagal menyimpan relasi
+				config.DB.Delete(&models.Activity{}, "id = ?", activityPembelianID)
+				config.DB.Delete(&models.Implementasi{}, "id = ?", implementasi.ID)
+
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"message": "Gagal menghubungkan Activity Pembelian dengan Implementasi: " + err.Error(),
+				})
+			}
+
+			// 4. Update ActivityAdminProyek status
+			if followUp.ActivityAdminProyekID != nil {
+				config.DB.
+					Model(&models.Activity{}).
+					Where("id = ?", *followUp.ActivityAdminProyekID).
+					Updates(map[string]interface{}{
+						"status": models.StatusSelesai,
+						"kpi":    "BAIK",
+					})
+			}
 		}
-	}
+
 	}
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{

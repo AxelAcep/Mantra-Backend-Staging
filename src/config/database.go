@@ -54,6 +54,7 @@ func ConnectDB() {
 		&models.PenawaranChat{},
 		&models.TerminPembayaran{},
 		&models.ItemTermin{},
+		&models.Bast{},
 	)
 
 	if err != nil {
