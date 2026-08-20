@@ -262,6 +262,7 @@ type FollowUp struct {
 	ActivityAdminProyek *Activity         `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
 	Status              StatusActivity    `gorm:"not null;default:'ON_PROGRESS'"               json:"status"`
 	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
+	TotalBAST 			*int 			  `gorm:"index" 									   json:"totalBast,omitempty"`
 	LogAktivitas        []LogFollowUp     `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Dokumen             []PenawaranDokumen `gorm:"foreignKey:FollowUpID"                       json:"dokumen,omitempty"`
 	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`
@@ -350,20 +351,33 @@ type Bast struct {
 	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
 	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
 
-	NoReferensi         string     `gorm:"default:''"                                   json:"noReferensi"`
-	TanggalTerbit       *time.Time `                                                    json:"tanggalTerbit,omitempty"`
-	TanggalSerahTerima  *time.Time `                                                    json:"tanggalSerahTerima,omitempty"`
-
 	Status       StatusActivity `gorm:"not null;default:ON_PROGRESS;index" json:"status"`
 	LogAktivitas []LogBast      `gorm:"serializer:json;default:'[]'"       json:"logs"`
 
-	// Daily Activities
+	Entries []BastEntry `gorm:"foreignKey:BastID" json:"entries,omitempty"`
+
+	CreatedAt time.Time `gorm:"index" json:"createdAt"`
+	UpdatedAt time.Time `             json:"updatedAt"`
+}
+
+type BastEntry struct {
+	ID     string `gorm:"primaryKey"     json:"id"`
+	BastID string `gorm:"not null;index" json:"bastId"`
+	Bast   Bast   `gorm:"foreignKey:BastID;references:ID" json:"-"`
+
+	NoReferensi        string     `gorm:"default:''" json:"noReferensi"`
+	TanggalTerbit      *time.Time `                   json:"tanggalTerbit,omitempty"`
+	TanggalSerahTerima *time.Time `                   json:"tanggalSerahTerima,omitempty"`
+
 	ActivityAdminProyekID *string   `gorm:"index"                                          json:"activityAdminProyekId,omitempty"`
 	ActivityAdminProyek   *Activity `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
 
 	CreatedAt time.Time `gorm:"index" json:"createdAt"`
 	UpdatedAt time.Time `             json:"updatedAt"`
 }
+
+func (Bast) TableName() string      { return "Bast" }
+func (BastEntry) TableName() string { return "BastEntry" }
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
 

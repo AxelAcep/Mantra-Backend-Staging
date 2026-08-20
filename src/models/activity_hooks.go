@@ -272,7 +272,6 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 }
 
 // ─── Activity Instalasi Barang DITERIMA → auto-buat BAST + Activity Admin Proyek ──
-
 func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	// Cek apakah activity ini adalah "activity instalasi" milik sebuah Implementasi.
 	var impl Implementasi
@@ -301,6 +300,12 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
+	if followUp.TotalBAST == nil || *followUp.TotalBAST <= 0 {
+		fmt.Println(">>> FollowUp.TotalBAST belum diisi, skip pembuatan BAST")
+		return nil
+	}
+	jumlahBast := *followUp.TotalBAST
+
 	var adminProyekActivity Activity
 	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
 		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip:", err)
@@ -315,35 +320,15 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	now := time.Now()
-	bastActivity := Activity{
-		ID:            uuid.New().String(),
-		PegawaiID:     adminProyekActivity.PegawaiID,
-		Kategori:      KategoriAkomodasiProject,
-		Judul:         "Pembuatan BAST",
-		Deskripsi:     "Activity otomatis pembuatan BAST setelah instalasi barang diterima",
-		WaktuMulai:    now,
-		TargetSelesai: now.Add(48 * time.Hour),
-		Status:        StatusOnProgress,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-
-	if err := tx.Create(&bastActivity).Error; err != nil {
-		fmt.Println(">>> Gagal membuat Activity Admin Proyek untuk BAST:", err)
-		return err
-	}
-
-	fmt.Println(">>> Activity BAST dibuat:", bastActivity.ID, "untuk pegawai:", bastActivity.PegawaiID)
 
 	bast := Bast{
-		ID:                    uuid.New().String(),
-		TrackingPenawaranID:   impl.TrackingPenawaranID,
-		Status:                StatusOnProgress,
-		ActivityAdminProyekID: &bastActivity.ID,
+		ID:                  uuid.New().String(),
+		TrackingPenawaranID: impl.TrackingPenawaranID,
+		Status:              StatusOnProgress,
 		LogAktivitas: []LogBast{
 			{
 				Aksi:        "Buat BAST",
-				Keterangan:  fmt.Sprintf("BAST otomatis dibuat untuk %s setelah instalasi barang diterima", adminProyekActivity.Pegawai.Nama),
+				Keterangan:  fmt.Sprintf("BAST otomatis dibuat untuk %s setelah instalasi barang diterima (%d entry)", adminProyekActivity.Pegawai.Nama, jumlahBast),
 				PegawaiID:   a.PegawaiID,
 				NamaPegawai: namaPegawai,
 				CreatedAt:   now,
@@ -359,6 +344,41 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	fmt.Println(">>> BAST dibuat:", bast.ID, "untuk tracking:", impl.TrackingPenawaranID)
+
+	for i := 0; i < jumlahBast; i++ {
+		bastActivity := Activity{
+			ID:            uuid.New().String(),
+			PegawaiID:     adminProyekActivity.PegawaiID,
+			Kategori:      KategoriAkomodasiProject,
+			Judul:         fmt.Sprintf("Pembuatan BAST #%d", i+1),
+			Deskripsi:     "Activity otomatis pembuatan BAST setelah instalasi barang diterima",
+			WaktuMulai:    now,
+			TargetSelesai: now.Add(48 * time.Hour),
+			Status:        StatusOnProgress,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+
+		if err := tx.Create(&bastActivity).Error; err != nil {
+			fmt.Println(">>> Gagal membuat Activity Admin Proyek untuk BAST entry:", err)
+			return err
+		}
+
+		entry := BastEntry{
+			ID:                    uuid.New().String(),
+			BastID:                bast.ID,
+			ActivityAdminProyekID: &bastActivity.ID,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		}
+
+		if err := tx.Create(&entry).Error; err != nil {
+			fmt.Println(">>> Gagal membuat BastEntry:", err)
+			return err
+		}
+
+		fmt.Println(">>> BastEntry dibuat:", entry.ID, "activity:", bastActivity.ID)
+	}
 
 	// Update TrackingPenawaran ke step BAST
 	if err := tx.Model(&TrackingPenawaran{}).

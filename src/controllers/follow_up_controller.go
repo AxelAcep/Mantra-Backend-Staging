@@ -318,6 +318,70 @@ func UpdateStatusFollowUp(c echo.Context) error {
 	})
 }
 
+// ── Input Total BAST ─────────────────────────────────────────────────────
+
+func InputBASTFollowup(c echo.Context) error {
+	trackingID := c.Param("id")
+
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	var body struct {
+		TotalBAST *int `json:"total_bast"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
+	if body.TotalBAST == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast wajib diisi."})
+	}
+	if *body.TotalBAST < 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast tidak boleh negatif."})
+	}
+
+	var followUp models.FollowUp
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&followUp).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
+	isMaster := roleStr == "MASTER"
+	isAdminProyek := followUp.AdminID != nil && *followUp.AdminID == pegawaiID
+
+	if !isManagerOps && !isMaster && !isAdminProyek {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Admin Proyek, Manager Operasional, atau Master yang bisa menginput Total BAST.",
+		})
+	}
+
+	followUp.TotalBAST = body.TotalBAST
+	appendFollowUpLog(
+		&followUp,
+		"Total BAST Diinput",
+		fmt.Sprintf("Total BAST diperbarui menjadi %d.", *body.TotalBAST),
+		pegawaiID,
+		namaPegawai,
+	)
+
+	if err := config.DB.Save(&followUp).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menyimpan Total BAST."})
+	}
+
+	updated, err := preloadFollowUp(trackingID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data terbaru."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Total BAST berhasil diupdate.",
+		"data":    updated,
+	})
+}
+
 // ── Upload Dokumen ─────────────────────────────────────────────────────────
 
 func UploadDokumenFollowUp(c echo.Context) error {
