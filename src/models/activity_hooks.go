@@ -42,6 +42,18 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		return err
 	}
 
+	// ── Activity BastEntry (Admin Proyek) DITERIMA → cek BAST selesai, auto-buat Garansi ──
+	if err := handleBastEntryDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handleBastEntryDiterima:", err)
+		return err
+	}
+
+	// ── Activity kunjungan Garansi bulan berjalan DITERIMA → lanjut bulan berikutnya ──
+	if err := handleGaransiMonthDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handleGaransiMonthDiterima:", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -392,4 +404,179 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	return nil
+}
+
+// ─── Activity BastEntry (Admin Proyek) DITERIMA → cek semua entry BAST selesai,
+// kalau iya tandai BAST SELESAI + auto-buat Garansi (status BELUM_DIKONFIGURASI) ──
+
+func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
+	// Cek apakah activity ini adalah "activity admin proyek" milik sebuah BastEntry.
+	var entry BastEntry
+	if err := tx.Where("activity_admin_proyek_id = ?", a.ID).First(&entry).Error; err != nil {
+		// Bukan activity BastEntry, skip diam-diam.
+		return nil
+	}
+
+	var bast Bast
+	if err := tx.Where("id = ?", entry.BastID).First(&bast).Error; err != nil {
+		fmt.Println(">>> BAST tidak ditemukan untuk entry:", entry.ID)
+		return nil
+	}
+
+	// Guard idempotency: kalau BAST udah SELESAI (Garansi udah pernah dibuat), skip.
+	if bast.Status == StatusSelesai {
+		fmt.Println(">>> BAST sudah SELESAI, skip:", bast.ID)
+		return nil
+	}
+
+	// Cek semua entry BAST ini activity-nya udah DITERIMA.
+	var totalEntries, doneEntries int64
+	tx.Model(&BastEntry{}).Where("bast_id = ?", bast.ID).Count(&totalEntries)
+	tx.Model(&BastEntry{}).
+		Joins(`JOIN "Activity" ON "Activity".id = "BastEntry".activity_admin_proyek_id`).
+		Where(`"BastEntry".bast_id = ? AND "Activity".status = ?`, bast.ID, StatusDiterima).
+		Count(&doneEntries)
+
+	if totalEntries == 0 || doneEntries < totalEntries {
+		fmt.Println(">>> BAST belum semua entry selesai:", doneEntries, "/", totalEntries)
+		return nil
+	}
+
+	fmt.Println(">>> Semua entry BAST DITERIMA, BAST SELESAI:", bast.ID)
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	now := time.Now()
+	bast.Status = StatusSelesai
+	bast.LogAktivitas = append(bast.LogAktivitas, LogBast{
+		Aksi:        "BAST Selesai",
+		Keterangan:  "Semua entry BAST telah selesai diserahterimakan",
+		PegawaiID:   a.PegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   now,
+	})
+
+	if err := tx.Model(&Bast{}).Where("id = ?", bast.ID).
+		Select("status", "log_aktivitas").
+		Updates(Bast{Status: bast.Status, LogAktivitas: bast.LogAktivitas}).Error; err != nil {
+		fmt.Println(">>> Gagal update status BAST jadi SELESAI:", err)
+		return err
+	}
+
+	// Guard idempotency Garansi (jaga-jaga race/re-trigger).
+	var existingGaransi Garansi
+	if tx.Where("tracking_penawaran_id = ?", bast.TrackingPenawaranID).First(&existingGaransi).Error == nil {
+		fmt.Println(">>> Garansi sudah ada, skip:", existingGaransi.ID)
+		return nil
+	}
+
+	var followUp FollowUp
+	if err := tx.Where("tracking_penawaran_id = ?", bast.TrackingPenawaranID).First(&followUp).Error; err != nil {
+		fmt.Println(">>> FollowUp tidak ditemukan, skip pembuatan Garansi:", err)
+		return nil
+	}
+
+	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip pembuatan Garansi")
+		return nil
+	}
+
+	var adminProyekActivity Activity
+	if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip pembuatan Garansi:", err)
+		return nil
+	}
+	picID := adminProyekActivity.PegawaiID
+
+	garansi := Garansi{
+		ID:                  uuid.New().String(),
+		TrackingPenawaranID: bast.TrackingPenawaranID,
+		BastID:              bast.ID,
+		PICID:               picID,
+		Status:              StatusGaransiBelumDikonfigurasi,
+		LogAktivitas: []LogGaransi{
+			{
+				Aksi:        "Buat Garansi",
+				Keterangan:  "Garansi otomatis dibuat setelah BAST selesai, menunggu konfigurasi tahun & bulan mulai",
+				PegawaiID:   a.PegawaiID,
+				NamaPegawai: namaPegawai,
+				CreatedAt:   now,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := tx.Create(&garansi).Error; err != nil {
+		fmt.Println(">>> Gagal membuat Garansi:", err)
+		return err
+	}
+
+	fmt.Println(">>> Garansi dibuat:", garansi.ID, "untuk tracking:", bast.TrackingPenawaranID, "PIC:", picID)
+
+	if err := tx.Model(&TrackingPenawaran{}).
+		Where("id = ?", bast.TrackingPenawaranID).
+		Updates(map[string]interface{}{
+			"step_saat_ini": StepGaransi,
+			"status":        StatusOnProgress,
+		}).Error; err != nil {
+		fmt.Println(">>> Gagal update TrackingPenawaran step Garansi:", err)
+		return err
+	}
+
+	return nil
+}
+
+// ─── Activity kunjungan Garansi bulan berjalan DITERIMA → tandai bulan itu
+// selesai, lalu (kalau tanggal kunjungan udah terisi) buat daily bulan berikutnya ──
+
+func handleGaransiMonthDiterima(tx *gorm.DB, a *Activity) error {
+	var month GaransiMonth
+	if err := tx.Where("activity_id = ?", a.ID).First(&month).Error; err != nil {
+		// Bukan activity kunjungan Garansi, skip diam-diam.
+		return nil
+	}
+
+	// Guard idempotency: kalau bulan ini udah pernah ditandai selesai, jangan diproses ulang.
+	if month.ActivitySelesai {
+		fmt.Println(">>> GaransiMonth sudah ditandai selesai, skip:", month.ID)
+		return nil
+	}
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	now := time.Now()
+	month.ActivitySelesai = true
+	month.LogAktivitas = append(month.LogAktivitas, LogGaransi{
+		Aksi:        "Kunjungan Selesai",
+		Keterangan:  fmt.Sprintf("Daily kunjungan garansi bulan ke-%d disetujui selesai", month.BulanKe),
+		PegawaiID:   a.PegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   now,
+	})
+
+	if month.TanggalKunjungan != nil {
+		month.Status = StatusDiterima
+	}
+
+	if err := tx.Model(&GaransiMonth{}).Where("id = ?", month.ID).
+		Select("activity_selesai", "status", "log_aktivitas").
+		Updates(GaransiMonth{
+			ActivitySelesai: month.ActivitySelesai,
+			Status:          month.Status,
+			LogAktivitas:    month.LogAktivitas,
+		}).Error; err != nil {
+		fmt.Println(">>> Gagal update GaransiMonth setelah DITERIMA:", err)
+		return err
+	}
+
+	return AdvanceGaransiIfReady(tx, &month, a.PegawaiID, namaPegawai)
 }

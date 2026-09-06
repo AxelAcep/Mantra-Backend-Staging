@@ -47,7 +47,10 @@ func appendBastLog(bast *models.Bast, aksi, keterangan, pegawaiID, namaPegawai s
 		CreatedAt:   time.Now(),
 	}
 	bast.LogAktivitas = append(bast.LogAktivitas, log)
-	config.DB.Model(bast).Update("log_aktivitas", bast.LogAktivitas)
+	// Pakai Select+Updates (bukan Update kolom tunggal) supaya serializer:json
+	// ke-apply — Update(column, value) langsung ngirim slice mentah ke driver
+	// dan bikin Postgres error "could not determine data type of parameter $1".
+	config.DB.Model(bast).Select("log_aktivitas").Updates(models.Bast{LogAktivitas: bast.LogAktivitas})
 }
 
 // ── Get Detail ──────────────────────────────────────────────────────────────

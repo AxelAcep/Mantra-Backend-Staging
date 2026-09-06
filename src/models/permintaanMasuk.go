@@ -97,6 +97,7 @@ type TrackingPenawaran struct {
 	Implementasi         *Implementasi         `gorm:"foreignKey:TrackingPenawaranID" json:"implementasi,omitempty"`
 	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
 	Bast 				 *Bast `gorm:"foreignKey:TrackingPenawaranID" json:"bast,omitempty"`
+	Garansi 			 *Garansi `gorm:"foreignKey:TrackingPenawaranID" json:"garansi,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
 

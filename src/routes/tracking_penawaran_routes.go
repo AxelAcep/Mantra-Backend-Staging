@@ -90,4 +90,9 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.GET("/:id/bast", controllers.GetDetailBast, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/:id/bast/entry", controllers.CreateBastEntry, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/bast/entry/:entryId", controllers.UpdateDetailBast, middleware.VerifyToken, middleware.AuthorizeRole(3))
+
+	// Garansi (Step 7 — auto-dibuat setelah BAST selesai)
+	g.GET("/:id/garansi", controllers.GetDetailGaransi, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/garansi/konfigurasi", controllers.KonfigurasiGaransi, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/garansi/month/:monthId/tanggal-kunjungan", controllers.UpdateTanggalKunjunganGaransi, middleware.VerifyToken, middleware.AuthorizeRole(3))
 }
