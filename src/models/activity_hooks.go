@@ -42,7 +42,7 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		return err
 	}
 
-	// ── Activity BastEntry (Admin Proyek) DITERIMA → cek BAST selesai, auto-buat Garansi ──
+	// ── Activity BastEntry (Admin Proyek) DITERIMA → entry pertama auto-buat Garansi (paralel dgn BAST) ──
 	if err := handleBastEntryDiterima(tx, a); err != nil {
 		fmt.Println(">>> Error handleBastEntryDiterima:", err)
 		return err
@@ -406,8 +406,12 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	return nil
 }
 
-// ─── Activity BastEntry (Admin Proyek) DITERIMA → cek semua entry BAST selesai,
-// kalau iya tandai BAST SELESAI + auto-buat Garansi (status BELUM_DIKONFIGURASI) ──
+// ─── Activity BastEntry (Admin Proyek) DITERIMA ───────────────────────────────
+// (1) Kalau SEMUA entry BAST udah DITERIMA → tandai BAST SELESAI.
+// (2) Kalau entry PERTAMA (paling awal dibuat) udah DITERIMA → auto-buat
+//     Garansi (status BELUM_DIKONFIGURASI), TANPA nunggu entry lain selesai.
+//     BAST & Garansi memang didesain bisa berjalan paralel/parsial — entry
+//     BAST lain boleh masih on progress selagi Garansi udah mulai jalan.
 
 func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 	// Cek apakah activity ini adalah "activity admin proyek" milik sebuah BastEntry.
@@ -423,27 +427,6 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
-	// Guard idempotency: kalau BAST udah SELESAI (Garansi udah pernah dibuat), skip.
-	if bast.Status == StatusSelesai {
-		fmt.Println(">>> BAST sudah SELESAI, skip:", bast.ID)
-		return nil
-	}
-
-	// Cek semua entry BAST ini activity-nya udah DITERIMA.
-	var totalEntries, doneEntries int64
-	tx.Model(&BastEntry{}).Where("bast_id = ?", bast.ID).Count(&totalEntries)
-	tx.Model(&BastEntry{}).
-		Joins(`JOIN "Activity" ON "Activity".id = "BastEntry".activity_admin_proyek_id`).
-		Where(`"BastEntry".bast_id = ? AND "Activity".status = ?`, bast.ID, StatusDiterima).
-		Count(&doneEntries)
-
-	if totalEntries == 0 || doneEntries < totalEntries {
-		fmt.Println(">>> BAST belum semua entry selesai:", doneEntries, "/", totalEntries)
-		return nil
-	}
-
-	fmt.Println(">>> Semua entry BAST DITERIMA, BAST SELESAI:", bast.ID)
-
 	namaPegawai := ""
 	var pegawai Pegawai
 	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
@@ -451,20 +434,48 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	now := time.Now()
-	bast.Status = StatusSelesai
-	bast.LogAktivitas = append(bast.LogAktivitas, LogBast{
-		Aksi:        "BAST Selesai",
-		Keterangan:  "Semua entry BAST telah selesai diserahterimakan",
-		PegawaiID:   a.PegawaiID,
-		NamaPegawai: namaPegawai,
-		CreatedAt:   now,
-	})
 
-	if err := tx.Model(&Bast{}).Where("id = ?", bast.ID).
-		Select("status", "log_aktivitas").
-		Updates(Bast{Status: bast.Status, LogAktivitas: bast.LogAktivitas}).Error; err != nil {
-		fmt.Println(">>> Gagal update status BAST jadi SELESAI:", err)
-		return err
+	// ── (1) Tandai BAST SELESAI kalau semua entry-nya udah DITERIMA ──────────
+	if bast.Status != StatusSelesai {
+		var totalEntries, doneEntries int64
+		tx.Model(&BastEntry{}).Where("bast_id = ?", bast.ID).Count(&totalEntries)
+		tx.Model(&BastEntry{}).
+			Joins(`JOIN "Activity" ON "Activity".id = "BastEntry".activity_admin_proyek_id`).
+			Where(`"BastEntry".bast_id = ? AND "Activity".status = ?`, bast.ID, StatusDiterima).
+			Count(&doneEntries)
+
+		if totalEntries > 0 && doneEntries >= totalEntries {
+			fmt.Println(">>> Semua entry BAST DITERIMA, BAST SELESAI:", bast.ID)
+			bast.Status = StatusSelesai
+			bast.LogAktivitas = append(bast.LogAktivitas, LogBast{
+				Aksi:        "BAST Selesai",
+				Keterangan:  "Semua entry BAST telah selesai diserahterimakan",
+				PegawaiID:   a.PegawaiID,
+				NamaPegawai: namaPegawai,
+				CreatedAt:   now,
+			})
+
+			if err := tx.Model(&Bast{}).Where("id = ?", bast.ID).
+				Select("status", "log_aktivitas").
+				Updates(Bast{Status: bast.Status, LogAktivitas: bast.LogAktivitas}).Error; err != nil {
+				fmt.Println(">>> Gagal update status BAST jadi SELESAI:", err)
+				return err
+			}
+		} else {
+			fmt.Println(">>> BAST belum semua entry selesai:", doneEntries, "/", totalEntries)
+		}
+	}
+
+	// ── (2) Entry pertama BAST DITERIMA → auto-buat Garansi (paralel dgn BAST) ──
+	var firstEntry BastEntry
+	if err := tx.Where("bast_id = ?", bast.ID).Order("created_at ASC").First(&firstEntry).Error; err != nil {
+		fmt.Println(">>> Gagal ambil entry pertama BAST, skip pembuatan Garansi:", err)
+		return nil
+	}
+
+	if firstEntry.ID != entry.ID {
+		fmt.Println(">>> Bukan entry pertama BAST, skip pembuatan Garansi (nunggu entry pertama)")
+		return nil
 	}
 
 	// Guard idempotency Garansi (jaga-jaga race/re-trigger).
@@ -501,7 +512,7 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		LogAktivitas: []LogGaransi{
 			{
 				Aksi:        "Buat Garansi",
-				Keterangan:  "Garansi otomatis dibuat setelah BAST selesai, menunggu konfigurasi tahun & bulan mulai",
+				Keterangan:  "Garansi otomatis dibuat setelah entry pertama BAST selesai (berjalan paralel dengan entry BAST lainnya), menunggu konfigurasi tahun & bulan mulai",
 				PegawaiID:   a.PegawaiID,
 				NamaPegawai: namaPegawai,
 				CreatedAt:   now,

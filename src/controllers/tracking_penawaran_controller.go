@@ -757,6 +757,27 @@ type PenawaranListItem struct {
 	TanggalTerbit    *time.Time              `json:"tanggalTerbit,omitempty"`
 	TotalTermin      int                     `json:"totalTermin,omitempty"`
 	TerminDibayar    int                     `json:"terminDibayar,omitempty"`
+
+	// Tab "Pengadaan Aktif": tahap Implementasi saat ini.
+	ImplementasiTahap string `json:"implementasiTahap,omitempty"` // PEMBELIAN_BARANG | PENGANTARAN | INSTALASI
+
+	// Tab "BAST" / "Konfirmasi Selesai": BAST udah terpenuhi (semua entry DITERIMA) apa belum,
+	// + progress "sudah berapa dari berapa" entry BAST.
+	BastLengkap        *bool `json:"bastLengkap,omitempty"`
+	BastEntriesTotal   int   `json:"bastEntriesTotal,omitempty"`
+	BastEntriesSelesai int   `json:"bastEntriesSelesai,omitempty"`
+
+	// Tab "Garansi": periode, status tuntas, + progress "sudah berapa dari berapa" bulan kunjungan.
+	GaransiMulai        *time.Time `json:"garansiMulai,omitempty"`
+	GaransiSelesai      *time.Time `json:"garansiSelesai,omitempty"`
+	GaransiTuntas       *bool      `json:"garansiTuntas,omitempty"`
+	GaransiBulanTotal   int        `json:"garansiBulanTotal,omitempty"`
+	GaransiBulanSelesai int        `json:"garansiBulanSelesai,omitempty"`
+
+	// Tab "Riwayat": status keseluruhan pengadaan — ON_PROGRESS | SELESAI | DIBATALKAN.
+	// SELESAI = BAST & Garansi udah sama-sama tuntas; DIBATALKAN = dibatalkan
+	// di step Follow Up; sisanya ON_PROGRESS.
+	OverallStatus string `json:"overallStatus,omitempty"`
 }
 
 type PegawaiSummary struct {
@@ -791,6 +812,67 @@ var stepsAktif = []models.StepPenawaran{
 	models.StepBAST,
 	models.StepPembayaran,
 	models.StepGaransi,
+}
+
+// currentStepStatus mengembalikan status milik entity step yang SEDANG
+// berjalan (PermintaanMasuk/PenyusunanBoQ/.../Bast/Garansi), bukan
+// TrackingPenawaran.Status. TrackingPenawaran.Status di-update ad-hoc dari
+// banyak controller berbeda tiap kali step pindah, jadi gampang gak sinkron
+// dan artinya rancu (PERLU_TINDAKAN di step 1 beda konteks sama PERLU_TINDAKAN
+// di step 6). Dengan ini, badge status di list SELALU mencerminkan status
+// daily/approval yang aktif sekarang di step tsb — satu sumber kebenaran per
+// baris, dan gak perlu nulis ulang status di tempat lain.
+func currentStepStatus(r models.TrackingPenawaran) models.StatusActivity {
+	switch r.StepSaatIni {
+	case models.StepPermintaanMasuk:
+		if r.PermintaanMasuk != nil {
+			return r.PermintaanMasuk.Status
+		}
+	case models.StepPenyusunanBoQ:
+		if r.PenyusunanBoQ != nil {
+			return r.PenyusunanBoQ.Status
+		}
+	case models.StepReviewInternal:
+		if r.ReviewInternal != nil {
+			return r.ReviewInternal.Status
+		}
+	case models.StepPersetujuanManajemen:
+		if r.PersetujuanManajemen != nil {
+			return r.PersetujuanManajemen.Status
+		}
+	case models.StepFollowUp:
+		if r.FollowUp != nil {
+			return r.FollowUp.Status
+		}
+	case models.StepImplementasi:
+		if r.Implementasi != nil {
+			return r.Implementasi.Status
+		}
+	case models.StepBAST:
+		if r.Bast != nil {
+			return r.Bast.Status
+		}
+	case models.StepPembayaran:
+		if r.Accounting != nil {
+			return r.Accounting.Status
+		}
+	case models.StepGaransi:
+		if r.Garansi != nil {
+			// StatusGaransi punya enum sendiri (beda dari StatusActivity),
+			// dipetakan ke padanan terdekat biar badge di FE tetap konsisten.
+			switch r.Garansi.Status {
+			case models.StatusGaransiBelumDikonfigurasi:
+				return models.StatusPerluTindakan
+			case models.StatusGaransiSelesai:
+				return models.StatusSelesai
+			default:
+				return models.StatusOnProgress
+			}
+		}
+	}
+	// Fallback kalau entity step-nya belum ke-preload / belum ada: pakai
+	// TrackingPenawaran.Status lama.
+	return r.Status
 }
 
 // ─── GET /tracking-penawaran ──────────────────────────────────────────────────
@@ -837,8 +919,13 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PenyusunanBoQ").
 		Preload("PenyusunanBoQ.Pembuat").
+		Preload("ReviewInternal").
+		Preload("PersetujuanManajemen").
 		Preload("Perusahaan").
 		Preload("FollowUp").
+		Preload("Implementasi").
+		Preload("Bast").
+		Preload("Garansi").
 		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
 		Limit(limit).
@@ -850,49 +937,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 
 	items := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
-		item := PenawaranListItem{
-			ID:             r.ID,
-			NomorPenawaran: r.NomorPenawaran,
-			TanggalMasuk:   r.CreatedAt,
-			StepSaatIni:    r.StepSaatIni,
-			Status:         r.Status, // dari field baru TrackingPenawaran
-			PerusahaanName: r.Perusahaan.Nama,
-			LokasiProyek:   r.LokasiProyek,
-			JenisPenawaran: r.JenisPenawaran,
-		}
-
-		item.PICReq = &PegawaiSummary{
-			ID:   r.Marketing.ID,
-			Nama: r.Marketing.Nama,
-		}
-
-		if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
-			item.PembuatPenawaran = &PegawaiSummary{
-				ID:   r.PermintaanMasuk.PreSales.ID,
-				Nama: r.PermintaanMasuk.PreSales.Nama,
-			}
-		}
-
-		if r.PenyusunanBoQ != nil {
-			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
-		}
-
-		if r.FollowUp != nil && r.FollowUp.Status == models.StatusSelesai {
-			item.TanggalTerbit = &r.FollowUp.UpdatedAt
-		}
-
-		if r.Accounting != nil {
-			item.TotalTermin = len(r.Accounting.Items)
-			paid := 0
-			for _, it := range r.Accounting.Items {
-				if it.SudahDibayar {
-					paid++
-				}
-			}
-			item.TerminDibayar = paid
-		}
-
-		items = append(items, item)
+		items = append(items, buildPenawaranListItem(r))
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -939,6 +984,18 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		query = query.Where(`"step_saat_ini" = ?`, filterStep)
 	}
 
+	// Split "Pembayaran" (BAST masih berjalan) vs "Konfirmasi Selesai" (BAST
+	// udah lengkap semua entry-nya) — dua tab beda, sama-sama step=BAST, cuma
+	// beda kondisi kelengkapan. Cuma dipakai kalau filterStep-nya BAST.
+	bastLengkapParam := c.QueryParam("bastLengkap")
+	if filterStep == string(models.StepBAST) && bastLengkapParam != "" {
+		if bastLengkapParam == "true" {
+			query = query.Where(`EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?)`, models.StatusSelesai)
+		} else {
+			query = query.Where(`NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?)`, models.StatusSelesai)
+		}
+	}
+
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
@@ -950,8 +1007,13 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		Preload("PermintaanMasuk.PreSales").
 		Preload("PenyusunanBoQ").
 		Preload("PenyusunanBoQ.Pembuat").
+		Preload("ReviewInternal").
+		Preload("PersetujuanManajemen").
 		Preload("Perusahaan").
 		Preload("FollowUp").
+		Preload("Implementasi").
+		Preload("Bast").
+		Preload("Garansi").
 		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
 		Limit(limit).
@@ -963,49 +1025,7 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 
 	items := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
-		item := PenawaranListItem{
-			ID:             r.ID,
-			NomorPenawaran: r.NomorPenawaran,
-			TanggalMasuk:   r.CreatedAt,
-			StepSaatIni:    r.StepSaatIni,
-			Status:         r.Status, // dari field baru TrackingPenawaran
-			PerusahaanName: r.Perusahaan.Nama,
-			LokasiProyek:   r.LokasiProyek,
-			JenisPenawaran: r.JenisPenawaran,
-		}
-
-		item.PICReq = &PegawaiSummary{
-			ID:   r.Marketing.ID,
-			Nama: r.Marketing.Nama,
-		}
-
-		if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
-			item.PembuatPenawaran = &PegawaiSummary{
-				ID:   r.PermintaanMasuk.PreSales.ID,
-				Nama: r.PermintaanMasuk.PreSales.Nama,
-			}
-		}
-
-		if r.PenyusunanBoQ != nil {
-			item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
-		}
-
-		if r.FollowUp != nil && r.FollowUp.Status == models.StatusSelesai {
-			item.TanggalTerbit = &r.FollowUp.UpdatedAt
-		}
-
-		if r.Accounting != nil {
-			item.TotalTermin = len(r.Accounting.Items)
-			paid := 0
-			for _, it := range r.Accounting.Items {
-				if it.SudahDibayar {
-					paid++
-				}
-			}
-			item.TerminDibayar = paid
-		}
-
-		items = append(items, item)
+		items = append(items, buildPenawaranListItem(r))
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -1019,6 +1039,223 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 			TotalPages: totalPages,
 		},
 	})
+}
+
+// GET /tracking-penawaran/riwayat — semua TrackingPenawaran, status apapun,
+// tanpa batasan step (beda dari List/Aktif yang dibatasin ke stepsPengadaan/
+// stepsAktif). Garansi sekarang punya tab sendiri jadi Riwayat gak lagi
+// di-hardcode ke satu step tertentu.
+func GetTrackingPenawaranRiwayat(c echo.Context) error {
+	pegawaiID, ok := getPenawaranPegawaiID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	_ = pegawaiID
+
+	page := max(1, toInt(c.QueryParam("page"), 1))
+	limit := max(1, toInt(c.QueryParam("limit"), 20))
+	search := strings.TrimSpace(c.QueryParam("search"))
+	filterStep := c.QueryParam("step")
+
+	offset := (page - 1) * limit
+
+	query := config.DB.Model(&models.TrackingPenawaran{})
+
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ?`,
+			like, like, like,
+		)
+	}
+
+	if filterStep != "" {
+		query = query.Where(`"step_saat_ini" = ?`, filterStep)
+	}
+
+	// Filter status keseluruhan: ON_PROGRESS | SELESAI | DIBATALKAN — sama
+	// persis logika yang dipakai buildPenawaranListItem.OverallStatus, cuma
+	// diterjemahin ke SQL biar bisa difilter di query (bukan di memori),
+	// soalnya SELESAI/ON_PROGRESS gak disimpan sebagai satu kolom langsung.
+	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status = ?)`
+	switch c.QueryParam("overallStatus") {
+	case "DIBATALKAN":
+		query = query.Where(`"TrackingPenawaran".status = ?`, models.StatusDibatalkan)
+	case "SELESAI":
+		query = query.Where(`"TrackingPenawaran".status != ? AND (`+bastGaransiSelesaiSQL+`)`,
+			models.StatusDibatalkan, models.StatusSelesai, models.StatusGaransiSelesai)
+	case "ON_PROGRESS":
+		query = query.Where(`"TrackingPenawaran".status != ? AND NOT (`+bastGaransiSelesaiSQL+`)`,
+			models.StatusDibatalkan, models.StatusSelesai, models.StatusGaransiSelesai)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
+	}
+
+	var rows []models.TrackingPenawaran
+	err := query.
+		Preload("Marketing").
+		Preload("PermintaanMasuk.PreSales").
+		Preload("PenyusunanBoQ").
+		Preload("PenyusunanBoQ.Pembuat").
+		Preload("ReviewInternal").
+		Preload("PersetujuanManajemen").
+		Preload("Perusahaan").
+		Preload("FollowUp").
+		Preload("Implementasi").
+		Preload("Bast").
+		Preload("Garansi").
+		Preload("Accounting.Items").
+		Order(`"created_at" DESC`).
+		Limit(limit).
+		Offset(offset).
+		Find(&rows).Error
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal mengambil data"})
+	}
+
+	items := make([]PenawaranListItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, buildPenawaranListItem(r))
+	}
+
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+
+	return c.JSON(http.StatusOK, PenawaranListResponse{
+		Data: items,
+		Meta: PaginationMeta{
+			Page:       page,
+			Limit:      limit,
+			Total:      total,
+			TotalPages: totalPages,
+		},
+	})
+}
+
+// buildPenawaranListItem ngerakit satu baris list dari TrackingPenawaran yang
+// udah di-preload — dipakai bareng oleh GetTrackingPenawaranAktif &
+// GetTrackingPenawaranRiwayat biar gak duplikat.
+func buildPenawaranListItem(r models.TrackingPenawaran) PenawaranListItem {
+	item := PenawaranListItem{
+		ID:             r.ID,
+		NomorPenawaran: r.NomorPenawaran,
+		TanggalMasuk:   r.CreatedAt,
+		StepSaatIni:    r.StepSaatIni,
+		Status:         currentStepStatus(r),
+		PerusahaanName: r.Perusahaan.Nama,
+		LokasiProyek:   r.LokasiProyek,
+		JenisPenawaran: r.JenisPenawaran,
+	}
+
+	item.PICReq = &PegawaiSummary{
+		ID:   r.Marketing.ID,
+		Nama: r.Marketing.Nama,
+	}
+
+	if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
+		item.PembuatPenawaran = &PegawaiSummary{
+			ID:   r.PermintaanMasuk.PreSales.ID,
+			Nama: r.PermintaanMasuk.PreSales.Nama,
+		}
+	}
+
+	if r.PenyusunanBoQ != nil {
+		item.EstimasiHarga = r.PenyusunanBoQ.EstimasiHarga
+	}
+
+	if r.FollowUp != nil && r.FollowUp.Status == models.StatusSelesai {
+		item.TanggalTerbit = &r.FollowUp.UpdatedAt
+	}
+
+	if r.Accounting != nil {
+		item.TotalTermin = len(r.Accounting.Items)
+		paid := 0
+		for _, it := range r.Accounting.Items {
+			if it.SudahDibayar {
+				paid++
+			}
+		}
+		item.TerminDibayar = paid
+	}
+
+	// Pengadaan Aktif: tahap Implementasi sekarang lagi di mana (dilihat dari
+	// Activity mana yang paling jauh udah dibuat — ikut urutan cascade di
+	// activity_hooks.go: Pembelian -> Pengantaran -> Instalasi).
+	if r.Implementasi != nil {
+		switch {
+		case r.Implementasi.ActivityInstalasiID != nil && *r.Implementasi.ActivityInstalasiID != "":
+			item.ImplementasiTahap = "INSTALASI"
+		case r.Implementasi.ActivityPengantaranID != nil && *r.Implementasi.ActivityPengantaranID != "":
+			item.ImplementasiTahap = "PENGANTARAN"
+		default:
+			item.ImplementasiTahap = "PEMBELIAN_BARANG"
+		}
+	}
+
+	// BAST / Konfirmasi Selesai: BAST udah terpenuhi (semua entry DITERIMA)
+	// apa belum, + progress "sudah berapa dari berapa" entry.
+	if r.Bast != nil {
+		lengkap := r.Bast.Status == models.StatusSelesai
+		item.BastLengkap = &lengkap
+		item.BastEntriesTotal, item.BastEntriesSelesai = bastEntriesProgress(r.Bast.ID)
+	}
+
+	// Garansi: periode mulai/selesai, status tuntas apa belum, + progress
+	// "sudah berapa dari berapa" bulan kunjungan.
+	if r.Garansi != nil {
+		if r.Garansi.BulanMulai != nil && r.Garansi.TahunMulai != nil {
+			mulai := time.Date(*r.Garansi.TahunMulai, time.Month(*r.Garansi.BulanMulai), 1, 0, 0, 0, 0, time.Local)
+			item.GaransiMulai = &mulai
+
+			if r.Garansi.LamaTahun != nil {
+				selesai := mulai.AddDate(*r.Garansi.LamaTahun, 0, -1)
+				item.GaransiSelesai = &selesai
+			}
+		}
+		tuntas := r.Garansi.Status == models.StatusGaransiSelesai
+		item.GaransiTuntas = &tuntas
+		item.GaransiBulanTotal, item.GaransiBulanSelesai = garansiMonthsProgress(r.Garansi.ID)
+	}
+
+	// Status keseluruhan (dipakai tab Riwayat): DIBATALKAN kalau tracking-nya
+	// dibatalkan (di step Follow Up), SELESAI kalau BAST & Garansi udah
+	// sama-sama tuntas, sisanya ON_PROGRESS.
+	switch {
+	case r.Status == models.StatusDibatalkan:
+		item.OverallStatus = "DIBATALKAN"
+	case r.Bast != nil && r.Bast.Status == models.StatusSelesai &&
+		r.Garansi != nil && r.Garansi.Status == models.StatusGaransiSelesai:
+		item.OverallStatus = "SELESAI"
+	default:
+		item.OverallStatus = "ON_PROGRESS"
+	}
+
+	return item
+}
+
+// bastEntriesProgress ngitung berapa dari berapa entry BAST yang activity-nya
+// udah DITERIMA — dipakai buat kolom progress "X dari Y" di tab BAST/Konfirmasi Selesai.
+func bastEntriesProgress(bastID string) (total, selesai int) {
+	var totalCount, doneCount int64
+	config.DB.Model(&models.BastEntry{}).Where("bast_id = ?", bastID).Count(&totalCount)
+	config.DB.Model(&models.BastEntry{}).
+		Joins(`JOIN "Activity" ON "Activity".id = "BastEntry".activity_admin_proyek_id`).
+		Where(`"BastEntry".bast_id = ? AND "Activity".status = ?`, bastID, models.StatusDiterima).
+		Count(&doneCount)
+	return int(totalCount), int(doneCount)
+}
+
+// garansiMonthsProgress ngitung berapa dari berapa bulan Garansi yang udah
+// DITERIMA (kunjungan tuntas) — dipakai buat kolom progress "X dari Y" di tab Garansi.
+func garansiMonthsProgress(garansiID string) (total, selesai int) {
+	var totalCount, doneCount int64
+	config.DB.Model(&models.GaransiMonth{}).Where("garansi_id = ?", garansiID).Count(&totalCount)
+	config.DB.Model(&models.GaransiMonth{}).
+		Where("garansi_id = ? AND status = ?", garansiID, models.StatusDiterima).
+		Count(&doneCount)
+	return int(totalCount), int(doneCount)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

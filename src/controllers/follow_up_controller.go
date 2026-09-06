@@ -153,6 +153,12 @@ func UpdateStatusFollowUp(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
 	}
 
+	if followUp.Status == models.StatusDibatalkan {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Permintaan penawaran ini sudah dibatalkan, tidak bisa diproses lagi.",
+		})
+	}
+
 	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
 	isMaster := roleStr == "MASTER"
 
@@ -318,6 +324,82 @@ func UpdateStatusFollowUp(c echo.Context) error {
 	})
 }
 
+// ── Batalkan Permintaan Penawaran ──────────────────────────────────────────
+// Tombol "Batalkan Permintaan Penawaran" di step Follow Up — cuma boleh
+// diakses Manager Operasional, Direktur, atau Komisaris, dan cuma bisa
+// dipencet selama FollowUp masih ON_PROGRESS. Setelah dibatalkan, tracking
+// berhenti permanen di step ini (step_saat_ini gak pernah pindah lagi karena
+// gak ada lagi aksi lanjutan yang bisa dilakukan atas FollowUp yang DIBATALKAN).
+
+func BatalkanFollowUp(c echo.Context) error {
+	trackingID := c.Param("id")
+
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	var body struct {
+		Alasan string `json:"alasan"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
+	if strings.TrimSpace(body.Alasan) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Alasan pembatalan wajib diisi."})
+	}
+
+	isMaster := roleStr == "MASTER"
+	isBerwenang := divisiStr == "MANAGER_OPERASIONAL" || divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
+	if !isBerwenang && !isMaster {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Manager Operasional, Direktur, atau Komisaris yang bisa membatalkan permintaan penawaran.",
+		})
+	}
+
+	var followUp models.FollowUp
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&followUp).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	if followUp.Status != models.StatusOnProgress {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Permintaan penawaran cuma bisa dibatalkan selagi Follow Up masih On Progress.",
+		})
+	}
+
+	followUp.Status = models.StatusDibatalkan
+	appendFollowUpLog(
+		&followUp,
+		"Permintaan Penawaran Dibatalkan",
+		"Dibatalkan oleh "+namaPegawai+". Alasan: "+body.Alasan,
+		pegawaiID,
+		namaPegawai,
+	)
+
+	if err := config.DB.Save(&followUp).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membatalkan permintaan penawaran."})
+	}
+
+	if err := config.DB.Model(&models.TrackingPenawaran{}).
+		Where("id = ?", trackingID).
+		Update("status", models.StatusDibatalkan).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengupdate status tracking."})
+	}
+
+	updated, err := preloadFollowUp(trackingID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data terbaru."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Permintaan penawaran berhasil dibatalkan.",
+		"data":    updated,
+	})
+}
+
 // ── Input Total BAST ─────────────────────────────────────────────────────
 
 func InputBASTFollowup(c echo.Context) error {
@@ -346,6 +428,12 @@ func InputBASTFollowup(c echo.Context) error {
 		Where("tracking_penawaran_id = ?", trackingID).
 		First(&followUp).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	if followUp.Status == models.StatusDibatalkan {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Permintaan penawaran ini sudah dibatalkan, tidak bisa diproses lagi.",
+		})
 	}
 
 	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
@@ -744,6 +832,12 @@ func AssignAdminProyek(c echo.Context) error {
 		Where("id = ?", body.FollowUpID).
 		First(&followUp).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	if followUp.Status == models.StatusDibatalkan {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Permintaan penawaran ini sudah dibatalkan, tidak bisa diproses lagi.",
+		})
 	}
 
 	var pegawai models.Pegawai

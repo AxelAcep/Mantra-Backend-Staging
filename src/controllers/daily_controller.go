@@ -962,6 +962,8 @@ func KonfirmasiSelesai(c echo.Context) error {
 
 			if errFindFollowUp != nil {
 				fmt.Printf("DEBUG: Activity %s is DITERIMA, but not found as FollowUp ActivityAdminID. Error: %v\n", activityID, errFindFollowUp)
+			} else if followUp.Status == models.StatusDibatalkan {
+				fmt.Printf("DEBUG: FollowUp %s sudah DIBATALKAN, skip cascade Stage 1->2\n", followUp.ID)
 			} else {
 				fmt.Printf("DEBUG: Found FollowUp (ID: %s, Stage: %d) for Activity %s\n", followUp.ID, followUp.Stage, activityID)
 				if followUp.Stage == 1 {
@@ -1015,7 +1017,9 @@ func KonfirmasiSelesai(c echo.Context) error {
 				Preload("TrackingPenawaran.Perusahaan").
 				First(&followUp).Error
 
-			if errFindSales == nil {
+			if errFindSales == nil && followUp.Status == models.StatusDibatalkan {
+				fmt.Printf("DEBUG: FollowUp %s sudah DIBATALKAN, skip cascade Stage 2->3\n", followUp.ID)
+			} else if errFindSales == nil {
 				if followUp.Stage == 2 {
 					var adminProyek models.Pegawai
 					adminProyekNama := "Admin Proyek"

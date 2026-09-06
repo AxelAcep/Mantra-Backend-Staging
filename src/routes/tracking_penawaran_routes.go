@@ -13,6 +13,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	// ── 1. STATIC ROUTES ─────────────────────────────────────────────────────
 	g.GET("", controllers.GetTrackingPenawaranList, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/aktif", controllers.GetTrackingPenawaranAktif, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.GET("/riwayat", controllers.GetTrackingPenawaranRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("", controllers.CreateTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/mo/all", controllers.GetTrackingPenawaranMO, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/pegawai", controllers.GetPegawaiByDivisi, middleware.VerifyToken, middleware.AuthorizeRole(3))
@@ -64,6 +65,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.GET("/pegawai/admin-proyek", controllers.GetPegawaiSupervisiMaintenance, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/follow-up/admin-proyek", controllers.AssignAdminProyek, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/follow-up/bast", controllers.InputBASTFollowup, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/follow-up/batalkan", controllers.BatalkanFollowUp, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// Accounting
 	g.GET("/:id/accounting", controllers.GetAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))
