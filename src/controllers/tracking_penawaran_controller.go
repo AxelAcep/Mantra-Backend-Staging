@@ -894,7 +894,8 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
-		Where(`"step_saat_ini" IN ?`, stepsPengadaan)
+		Where(`"step_saat_ini" IN ?`, stepsPengadaan).
+		Where(`"status" != ?`, models.StatusDibatalkan)
 
 	if search != "" {
 		like := "%" + search + "%"
@@ -970,7 +971,8 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
-		Where(`"step_saat_ini" IN ?`, stepsAktif)
+		Where(`"step_saat_ini" IN ?`, stepsAktif).
+		Where(`"status" != ?`, models.StatusDibatalkan)
 
 	if search != "" {
 		like := "%" + search + "%"

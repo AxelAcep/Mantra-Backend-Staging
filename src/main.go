@@ -51,6 +51,7 @@ func main() {
 	routes.KPIRoutes(e)
 	routes.PerusahaanRoutes(e)
 	routes.TrackingPenawaranRoutes(e)
+	routes.DashboardRoutes(e)
 	routes.AccountingDashboardRoutes(e)
 
 	e.Logger.Fatal(e.Start(":8080"))

@@ -373,8 +373,8 @@ func BatalkanFollowUp(c echo.Context) error {
 	followUp.Status = models.StatusDibatalkan
 	appendFollowUpLog(
 		&followUp,
-		"Permintaan Penawaran Dibatalkan",
-		"Dibatalkan oleh "+namaPegawai+". Alasan: "+body.Alasan,
+		"Case Closed",
+		"Case Closed oleh "+namaPegawai+". Alasan: "+body.Alasan,
 		pegawaiID,
 		namaPegawai,
 	)
