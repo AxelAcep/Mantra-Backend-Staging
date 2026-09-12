@@ -23,9 +23,12 @@ func GetPengadaanSummary(c echo.Context) error {
 
 	var count int64
 
-	// 1. Request Penawaran → PERMINTAAN_MASUK
+	// 1. Request Penawaran → PERMINTAAN_MASUK + PENYUSUNAN_BOQ (step 1 & 2)
 	db.Model(&models.TrackingPenawaran{}).
-		Where(`"step_saat_ini" = ?`, models.StepPermintaanMasuk).
+		Where(`"step_saat_ini" IN ?`, []string{
+			string(models.StepPermintaanMasuk),
+			string(models.StepPenyusunanBoQ),
+		}).
 		Where(`"status" != ?`, models.StatusDibatalkan).
 		Count(&count)
 	summary.RequestPenawaran = int(count)
@@ -47,9 +50,12 @@ func GetPengadaanSummary(c echo.Context) error {
 		Count(&count)
 	summary.PenawaranFinal = int(count)
 
-	// 4. PO Aktif → IMPLEMENTASI
+	// 4. PO Aktif → IMPLEMENTASI + BAST
 	db.Model(&models.TrackingPenawaran{}).
-		Where(`"step_saat_ini" = ?`, models.StepImplementasi).
+		Where(`"step_saat_ini" IN ?`, []string{
+			string(models.StepImplementasi),
+			string(models.StepBAST),
+		}).
 		Where(`"status" != ?`, models.StatusDibatalkan).
 		Count(&count)
 	summary.POAktif = int(count)

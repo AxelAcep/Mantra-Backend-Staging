@@ -65,21 +65,36 @@ func KonfigurasiGaransi(c echo.Context) error {
 	}
 
 	var body struct {
-		LamaTahun  int `json:"lamaTahun"`
-		BulanMulai int `json:"bulanMulai"`
-		TahunMulai int `json:"tahunMulai"`
+		KategoriGaransi models.KategoriGaransi `json:"kategoriGaransi"`
+		LamaTahun       int                    `json:"lamaTahun"`
+		BulanMulai      int                    `json:"bulanMulai"`
+		TahunMulai      int                    `json:"tahunMulai"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
-	if body.LamaTahun <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Lama tahun garansi wajib diisi."})
+
+	validKategori := map[models.KategoriGaransi]bool{
+		models.KategoriPACDalamKota:  true,
+		models.KategoriPACLuarKota:   true,
+		models.KategoriFireDalamKota: true,
+		models.KategoriFireLuarKota:  true,
+		models.KategoriTidakAda:      true,
 	}
-	if body.BulanMulai < 1 || body.BulanMulai > 12 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Bulan mulai tidak valid."})
+	if !validKategori[body.KategoriGaransi] {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Kategori garansi tidak valid."})
 	}
-	if body.TahunMulai <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tahun mulai wajib diisi."})
+
+	if body.KategoriGaransi != models.KategoriTidakAda {
+		if body.LamaTahun <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Lama tahun garansi wajib diisi."})
+		}
+		if body.BulanMulai < 1 || body.BulanMulai > 12 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Bulan mulai tidak valid."})
+		}
+		if body.TahunMulai <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tahun mulai wajib diisi."})
+		}
 	}
 
 	var garansi models.Garansi
@@ -90,50 +105,79 @@ func KonfigurasiGaransi(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Garansi sudah dikonfigurasi sebelumnya."})
 	}
 
-	totalBulan := body.LamaTahun * 12
+	if body.KategoriGaransi == models.KategoriTidakAda {
+		err := config.DB.Transaction(func(tx *gorm.DB) error {
+			now := time.Now()
+			garansi.KategoriGaransi = models.KategoriTidakAda
+			garansi.Status = models.StatusGaransiSelesai
+			garansi.LogAktivitas = append(garansi.LogAktivitas, models.LogGaransi{
+				Aksi:        "Tidak Ada Garansi",
+				Keterangan:  "Pengadaan ini tidak memiliki garansi.",
+				PegawaiID:   pegawaiID,
+				NamaPegawai: namaPegawai,
+				CreatedAt:   now,
+			})
+			garansi.UpdatedAt = now
+			return tx.Model(&models.Garansi{}).Where("id = ?", garansi.ID).
+				Select("kategori_garansi", "status", "log_aktivitas", "updated_at").
+				Updates(garansi).Error
+		})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengkonfigurasi garansi."})
+		}
+		updated, _ := preloadGaransi(trackingID)
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"message": "Garansi dikonfigurasi sebagai tidak ada garansi.",
+			"data":    updated,
+		})
+	}
+
+	_, bulanOffsets := models.KategoriSlotPattern(body.KategoriGaransi)
 
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
-		bulan := body.BulanMulai
-		tahun := body.TahunMulai
+		bulanKe := 0
 
-		for i := 1; i <= totalBulan; i++ {
-			month := models.GaransiMonth{
-				ID:        uuid.New().String(),
-				GaransiID: garansi.ID,
-				BulanKe:   i,
-				Bulan:     bulan,
-				Tahun:     tahun,
-				Status:    models.StatusPending,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}
-			if err := tx.Create(&month).Error; err != nil {
-				return err
-			}
+		for tahun := 0; tahun < body.LamaTahun; tahun++ {
+			for _, offset := range bulanOffsets {
+				bulanKe++
+				bulan := body.BulanMulai + offset - 1 + tahun*12
+				tahunHitung := body.TahunMulai
+				for bulan > 12 {
+					bulan -= 12
+					tahunHitung++
+				}
 
-			// Daily hanya dibuat untuk bulan ke-1, bulan berikutnya dibuat otomatis
-			// lewat hook (AdvanceGaransiIfReady) setelah bulan berjalan selesai.
-			if i == 1 {
-				if err := models.CreateGaransiMonthActivity(tx, &month, garansi.PICID, pegawaiID, namaPegawai); err != nil {
+				month := models.GaransiMonth{
+					ID:        uuid.New().String(),
+					GaransiID: garansi.ID,
+					BulanKe:   bulanKe,
+					Bulan:     bulan,
+					Tahun:     tahunHitung,
+					Status:    models.StatusPending,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}
+				if err := tx.Create(&month).Error; err != nil {
 					return err
 				}
-			}
 
-			bulan++
-			if bulan > 12 {
-				bulan = 1
-				tahun++
+				if bulanKe == 1 {
+					if err := models.CreateGaransiMonthActivity(tx, &month, garansi.PICID, pegawaiID, namaPegawai); err != nil {
+						return err
+					}
+				}
 			}
 		}
 
+		garansi.KategoriGaransi = body.KategoriGaransi
 		garansi.LamaTahun = &body.LamaTahun
 		garansi.BulanMulai = &body.BulanMulai
 		garansi.TahunMulai = &body.TahunMulai
 		garansi.Status = models.StatusGaransiOnProgress
 		garansi.LogAktivitas = append(garansi.LogAktivitas, models.LogGaransi{
 			Aksi:        "Konfigurasi Garansi",
-			Keterangan:  fmt.Sprintf("Timeline garansi %d tahun (%d bulan) dikonfigurasi, mulai %02d/%d", body.LamaTahun, totalBulan, body.BulanMulai, body.TahunMulai),
+			Keterangan:  fmt.Sprintf("Kategori %s, timeline %d tahun (%d kunjungan) dikonfigurasi, mulai %02d/%d", body.KategoriGaransi, body.LamaTahun, bulanKe, body.BulanMulai, body.TahunMulai),
 			PegawaiID:   pegawaiID,
 			NamaPegawai: namaPegawai,
 			CreatedAt:   now,
@@ -141,15 +185,8 @@ func KonfigurasiGaransi(c echo.Context) error {
 		garansi.UpdatedAt = now
 
 		return tx.Model(&models.Garansi{}).Where("id = ?", garansi.ID).
-			Select("lama_tahun", "bulan_mulai", "tahun_mulai", "status", "log_aktivitas", "updated_at").
-			Updates(models.Garansi{
-				LamaTahun:    garansi.LamaTahun,
-				BulanMulai:   garansi.BulanMulai,
-				TahunMulai:   garansi.TahunMulai,
-				Status:       garansi.Status,
-				LogAktivitas: garansi.LogAktivitas,
-				UpdatedAt:    garansi.UpdatedAt,
-			}).Error
+			Select("kategori_garansi", "lama_tahun", "bulan_mulai", "tahun_mulai", "status", "log_aktivitas", "updated_at").
+			Updates(garansi).Error
 	})
 
 	if err != nil {

@@ -18,6 +18,16 @@ const (
 	StatusGaransiSelesai            StatusGaransi = "SELESAI"
 )
 
+type KategoriGaransi string
+
+const (
+	KategoriPACDalamKota  KategoriGaransi = "PAC_DALAM_KOTA"
+	KategoriPACLuarKota   KategoriGaransi = "PAC_LUAR_KOTA"
+	KategoriFireDalamKota KategoriGaransi = "FIRE_DALAM_KOTA"
+	KategoriFireLuarKota  KategoriGaransi = "FIRE_LUAR_KOTA"
+	KategoriTidakAda      KategoriGaransi = "TIDAK_ADA"
+)
+
 // ─── Log Garansi ──────────────────────────────────────────────────────────────
 
 type LogGaransi struct {
@@ -43,6 +53,8 @@ type Garansi struct {
 	PIC   Pegawai `gorm:"foreignKey:PICID;references:ID" json:"pic,omitempty"`
 
 	Status StatusGaransi `gorm:"not null;default:BELUM_DIKONFIGURASI;index" json:"status"`
+
+	KategoriGaransi KategoriGaransi `gorm:"not null;default:''" json:"kategoriGaransi"`
 
 	// Diisi manual lewat endpoint konfigurasi timeline
 	LamaTahun  *int `gorm:"default:null" json:"lamaTahun,omitempty"`
@@ -90,6 +102,23 @@ type GaransiMonth struct {
 
 func (Garansi) TableName() string      { return "Garansi" }
 func (GaransiMonth) TableName() string { return "GaransiMonth" }
+
+// KategoriSlotPattern mengembalikan jumlah kunjungan per tahun dan interval
+// bulan untuk setiap kategori garansi.
+func KategoriSlotPattern(kategori KategoriGaransi) (kunjunganPerTahun int, bulanOffsets []int) {
+	switch kategori {
+	case KategoriPACDalamKota:
+		return 12, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	case KategoriPACLuarKota:
+		return 2, []int{1, 7}
+	case KategoriFireDalamKota:
+		return 4, []int{1, 4, 7, 10}
+	case KategoriFireLuarKota:
+		return 2, []int{1, 7}
+	default:
+		return 0, nil
+	}
+}
 
 // ─── Helpers bersama (dipakai controller & hook) ──────────────────────────────
 
