@@ -889,6 +889,8 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
 	filterStep := c.QueryParam("step")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
 	_ = pegawaiID
 
 	offset := (page - 1) * limit
@@ -915,6 +917,24 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		query = query.Where(`"step_saat_ini" IN ?`, stepsPengadaan)
 	}
 
+	// Sorting
+	orderClause := `"created_at" DESC`
+	if sortBy != "" {
+		allowedSorts := map[string]string{
+			"nomorPenawaran": `"nomor_penawaran"`,
+			"tanggalMasuk":   `"created_at"`,
+			"perusahaanName": `"customer_name"`,
+			"stepSaatIni":    `"step_saat_ini"`,
+		}
+		if col, ok := allowedSorts[sortBy]; ok {
+			dir := "ASC"
+			if strings.ToUpper(sortDir) == "DESC" {
+				dir = "DESC"
+			}
+			orderClause = col + " " + dir
+		}
+	}
+
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
@@ -934,7 +954,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		Preload("Bast").
 		Preload("Garansi").
 		Preload("Accounting.Items").
-		Order(`"created_at" DESC`).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&rows).Error
@@ -972,6 +992,8 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
 	filterStep := c.QueryParam("step")
+	sortBy := c.QueryParam("sortBy")
+	sortDir := c.QueryParam("sortDir")
 	_ = pegawaiID
 
 	offset := (page - 1) * limit
@@ -994,6 +1016,24 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 			query = query.Where(`"step_saat_ini" = ?`, steps[0])
 		} else {
 			query = query.Where(`"step_saat_ini" IN ?`, steps)
+		}
+	}
+
+	// Sorting
+	orderClause := `"created_at" DESC`
+	if sortBy != "" {
+		allowedSorts := map[string]string{
+			"nomorPenawaran": `"nomor_penawaran"`,
+			"tanggalMasuk":   `"created_at"`,
+			"perusahaanName": `"customer_name"`,
+			"stepSaatIni":    `"step_saat_ini"`,
+		}
+		if col, ok := allowedSorts[sortBy]; ok {
+			dir := "ASC"
+			if strings.ToUpper(sortDir) == "DESC" {
+				dir = "DESC"
+			}
+			orderClause = col + " " + dir
 		}
 	}
 
@@ -1028,7 +1068,7 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		Preload("Bast").
 		Preload("Garansi").
 		Preload("Accounting.Items").
-		Order(`"created_at" DESC`).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&rows).Error
