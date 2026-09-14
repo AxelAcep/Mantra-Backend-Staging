@@ -894,7 +894,6 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
-		Where(`"step_saat_ini" IN ?`, stepsPengadaan).
 		Where(`"status" != ?`, models.StatusDibatalkan)
 
 	if search != "" {
@@ -906,7 +905,14 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	}
 
 	if filterStep != "" {
-		query = query.Where(`"step_saat_ini" = ?`, filterStep)
+		steps := strings.Split(filterStep, ",")
+		if len(steps) == 1 {
+			query = query.Where(`"step_saat_ini" = ?`, steps[0])
+		} else {
+			query = query.Where(`"step_saat_ini" IN ?`, steps)
+		}
+	} else {
+		query = query.Where(`"step_saat_ini" IN ?`, stepsPengadaan)
 	}
 
 	var total int64
@@ -983,7 +989,12 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	}
 
 	if filterStep != "" {
-		query = query.Where(`"step_saat_ini" = ?`, filterStep)
+		steps := strings.Split(filterStep, ",")
+		if len(steps) == 1 {
+			query = query.Where(`"step_saat_ini" = ?`, steps[0])
+		} else {
+			query = query.Where(`"step_saat_ini" IN ?`, steps)
+		}
 	}
 
 	// Split "Pembayaran" (BAST masih berjalan) vs "Konfirmasi Selesai" (BAST

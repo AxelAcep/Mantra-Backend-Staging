@@ -60,8 +60,20 @@ func GetPengadaanSummary(c echo.Context) error {
 		Count(&count)
 	summary.POAktif = int(count)
 
-	// 5. Penawaran Pengadaan → BAST (reserved, return 0 for now)
-	summary.PenawaranPengadaan = 0
+	// 5. Penawaran Pengadaan → Seluruh step 1 s.d. 7 (sedang berjalan)
+	db.Model(&models.TrackingPenawaran{}).
+		Where(`"step_saat_ini" IN ?`, []string{
+			string(models.StepPermintaanMasuk),
+			string(models.StepPenyusunanBoQ),
+			string(models.StepReviewInternal),
+			string(models.StepPersetujuanManajemen),
+			string(models.StepFollowUp),
+			string(models.StepImplementasi),
+			string(models.StepBAST),
+		}).
+		Where(`"status" != ?`, models.StatusDibatalkan).
+		Count(&count)
+	summary.PenawaranPengadaan = int(count)
 
 	// 6. Konfirmasi Selesai → GARANSI (reserved, return 0 for now)
 	summary.KonfirmasiSelesai = 0
