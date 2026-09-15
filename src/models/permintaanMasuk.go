@@ -398,6 +398,10 @@ type BastEntry struct {
 	BastID string `gorm:"not null;index" json:"bastId"`
 	Bast   Bast   `gorm:"foreignKey:BastID;references:ID" json:"-"`
 
+	// Urutan entry ke berapa dalam Bast ini (1..N) — dailynya dibuat
+	// berurutan, entry ke-N+1 baru dibuatin daily setelah entry ke-N DITERIMA.
+	Index int `gorm:"not null;default:0" json:"index"`
+
 	NoReferensi        string     `gorm:"default:''" json:"noReferensi"`
 	TanggalTerbit      *time.Time `                   json:"tanggalTerbit,omitempty"`
 	TanggalSerahTerima *time.Time `                   json:"tanggalSerahTerima,omitempty"`

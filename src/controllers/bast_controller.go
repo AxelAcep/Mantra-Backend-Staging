@@ -140,9 +140,14 @@ func CreateBastEntry(c echo.Context) error {
 		noReferensi = models.GenerateBastKode(config.DB, bast.Kategori, kodePerusahaan, now.Year(), int(now.Month()))
 	}
 
+	var totalEntries int64
+	config.DB.Model(&models.BastEntry{}).Where("bast_id = ?", bast.ID).Count(&totalEntries)
+	nextIndex := int(totalEntries) + 1
+
 	entry := models.BastEntry{
 		ID:                 uuid.New().String(),
 		BastID:             bast.ID,
+		Index:              nextIndex,
 		NoReferensi:        noReferensi,
 		TanggalTerbit:      parseDate(body.TanggalTerbit),
 		TanggalSerahTerima: parseDate(body.TanggalSerahTerima),
@@ -150,7 +155,34 @@ func CreateBastEntry(c echo.Context) error {
 		UpdatedAt:          time.Now(),
 	}
 
-	if err := config.DB.Create(&entry).Error; err != nil {
+	err = config.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+
+		// Entry manual ini cuma langsung dapet daily kalau emang giliran
+		// pertama (belum ada entry lain) — selain itu nunggu
+		// AdvanceBastEntryIfReady kayak entry auto biasa (dipicu pas entry
+		// sebelumnya DITERIMA).
+		if nextIndex != 1 {
+			return nil
+		}
+
+		var followUp models.FollowUp
+		if err := tx.Where("tracking_penawaran_id = ?", trackingID).First(&followUp).Error; err != nil {
+			return nil
+		}
+		if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+			return nil
+		}
+		var adminProyekActivity models.Activity
+		if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+			return nil
+		}
+
+		return models.CreateBastEntryActivity(tx, &entry, adminProyekActivity.PegawaiID, bast.Kategori)
+	})
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menambahkan entry BAST."})
 	}
 

@@ -403,34 +403,21 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> BAST dibuat:", bast.ID, "kategori:", kategori, "untuk tracking:", impl.TrackingPenawaranID)
 		anyBastDibuat = true
 
-		for i := 0; i < jumlahBast; i++ {
-			bastActivity := Activity{
-				ID:            uuid.New().String(),
-				PegawaiID:     adminProyekActivity.PegawaiID,
-				Kategori:      KategoriAkomodasiProject,
-				Judul:         fmt.Sprintf("Pembuatan BAST %s #%d", kategori, i+1),
-				Deskripsi:     "Activity otomatis pembuatan BAST setelah instalasi barang diterima",
-				WaktuMulai:    now,
-				TargetSelesai: now.Add(48 * time.Hour),
-				Status:        StatusOnProgress,
-				CreatedAt:     now,
-				UpdatedAt:     now,
-			}
-
-			if err := tx.Create(&bastActivity).Error; err != nil {
-				fmt.Println(">>> Gagal membuat Activity Admin Proyek untuk BAST entry:", err)
-				return err
-			}
-
+		// Semua slot entry dibuat sekaligus (biar keliatan totalnya dari
+		// awal), TAPI daily-nya cuma dibuat buat entry pertama — entry ke-2
+		// dst baru dapet daily setelah entry sebelumnya DITERIMA
+		// (AdvanceBastEntryIfReady). PAC & FIRE jalan paralel satu sama
+		// lain, tapi masing-masing tetep urut sendiri-sendiri.
+		for i := 1; i <= jumlahBast; i++ {
 			noReferensi := GenerateBastKode(tx, kategori, kodePerusahaan, now.Year(), int(now.Month()))
 
 			entry := BastEntry{
-				ID:                    uuid.New().String(),
-				BastID:                bast.ID,
-				NoReferensi:           noReferensi,
-				ActivityAdminProyekID: &bastActivity.ID,
-				CreatedAt:             now,
-				UpdatedAt:             now,
+				ID:          uuid.New().String(),
+				BastID:      bast.ID,
+				Index:       i,
+				NoReferensi: noReferensi,
+				CreatedAt:   now,
+				UpdatedAt:   now,
 			}
 
 			if err := tx.Create(&entry).Error; err != nil {
@@ -438,7 +425,13 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 				return err
 			}
 
-			fmt.Println(">>> BastEntry dibuat:", entry.ID, "kode:", noReferensi, "activity:", bastActivity.ID)
+			fmt.Println(">>> BastEntry dibuat:", entry.ID, "kode:", noReferensi, "index:", i)
+
+			if i == 1 {
+				if err := CreateBastEntryActivity(tx, &entry, adminProyekActivity.PegawaiID, kategori); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -521,15 +514,35 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		}
 	}
 
-	// ── (2) Entry pertama BAST DITERIMA → auto-buat Garansi (paralel dgn BAST) ──
-	var firstEntry BastEntry
-	if err := tx.Where("bast_id = ?", bast.ID).Order("created_at ASC").First(&firstEntry).Error; err != nil {
-		fmt.Println(">>> Gagal ambil entry pertama BAST, skip pembuatan Garansi:", err)
+	var followUp FollowUp
+	if err := tx.Where("tracking_penawaran_id = ?", bast.TrackingPenawaranID).First(&followUp).Error; err != nil {
+		fmt.Println(">>> FollowUp tidak ditemukan, skip:", err)
 		return nil
 	}
+	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip")
+		return nil
+	}
+	var adminProyekActivity Activity
+	if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip:", err)
+		return nil
+	}
+	picID := adminProyekActivity.PegawaiID
 
-	if firstEntry.ID != entry.ID {
-		fmt.Println(">>> Bukan entry pertama BAST, skip pembuatan Garansi (nunggu entry pertama)")
+	// ── (2) Entry ini DITERIMA → buatin daily entry berikutnya (kalau ada) ───
+	// Berlaku buat SEMUA entry, bukan cuma entry pertama — BAST jalan
+	// berurutan satu-satu, bukan sekaligus. PAC & FIRE (2 Bast berbeda)
+	// tetep jalan paralel karena ini di-scope per Bast (per kategori).
+	if err := AdvanceBastEntryIfReady(tx, &entry, picID, bast.Kategori); err != nil {
+		fmt.Println(">>> Error AdvanceBastEntryIfReady:", err)
+		return err
+	}
+
+	// ── (3) Entry pertama (Index==1) BAST DITERIMA → auto-buat Garansi
+	// (berjalan paralel dengan entry BAST lainnya, gak perlu nunggu BAST tuntas) ──
+	if entry.Index != 1 {
+		fmt.Println(">>> Bukan entry pertama BAST, skip pembuatan Garansi")
 		return nil
 	}
 
@@ -539,24 +552,6 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> Garansi sudah ada, skip:", existingGaransi.ID)
 		return nil
 	}
-
-	var followUp FollowUp
-	if err := tx.Where("tracking_penawaran_id = ?", bast.TrackingPenawaranID).First(&followUp).Error; err != nil {
-		fmt.Println(">>> FollowUp tidak ditemukan, skip pembuatan Garansi:", err)
-		return nil
-	}
-
-	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
-		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip pembuatan Garansi")
-		return nil
-	}
-
-	var adminProyekActivity Activity
-	if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
-		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip pembuatan Garansi:", err)
-		return nil
-	}
-	picID := adminProyekActivity.PegawaiID
 
 	garansi := Garansi{
 		ID:                  uuid.New().String(),
