@@ -35,9 +35,12 @@ func preloadPersetujuanManajemen(trackingID string) (models.PersetujuanManajemen
 func GetDetailPersetujuanManajemen(c echo.Context) error {
     trackingID := c.Param("id")
 
-    _, _, _, _, ok := getReviewClaims(c)
+    _, _, roleStr, divisiStr, ok := getReviewClaims(c)
     if !ok {
         return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+    }
+    if !canViewStep(models.StepPersetujuanManajemen, roleStr, divisiStr) {
+        return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
     }
 
     persetujuan, err := preloadPersetujuanManajemen(trackingID)

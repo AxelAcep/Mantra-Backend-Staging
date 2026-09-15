@@ -54,6 +54,12 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		return err
 	}
 
+	// ── Activity penagihan Termin DITERIMA → lanjut termin berikutnya ──────
+	if err := handleItemTerminDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handleItemTerminDiterima:", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -284,18 +290,16 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 }
 
 // ─── Activity Instalasi Barang DITERIMA → auto-buat BAST + Activity Admin Proyek ──
+// BAST dipecah berdasarkan JenisPenawaran tracking-nya: kalau ada "PAC Montair"
+// DAN "Generator FirePro" dua-duanya → 2 Bast terpisah (PAC + FIRE), masing-
+// masing jumlah entry-nya dari FollowUp.TotalBastPAC/TotalBastFire. Kalau
+// cuma salah satu atau gak ada dua-duanya → 1 Bast (kategori itu, atau UMUM),
+// jumlah entry dari field yang sesuai. Maksimal 2 Bast, gak pernah lebih.
 func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	// Cek apakah activity ini adalah "activity instalasi" milik sebuah Implementasi.
 	var impl Implementasi
 	if err := tx.Where("activity_instalasi_id = ?", a.ID).First(&impl).Error; err != nil {
 		// Bukan activity instalasi barang implementasi, skip diam-diam.
-		return nil
-	}
-
-	// Guard idempotency: kalau BAST buat tracking ini udah pernah dibuat, jangan dobel.
-	var existingBast Bast
-	if tx.Where("tracking_penawaran_id = ?", impl.TrackingPenawaranID).First(&existingBast).Error == nil {
-		fmt.Println(">>> BAST sudah ada, skip:", existingBast.ID)
 		return nil
 	}
 
@@ -312,11 +316,11 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
-	if followUp.TotalBAST == nil || *followUp.TotalBAST <= 0 {
-		fmt.Println(">>> FollowUp.TotalBAST belum diisi, skip pembuatan BAST")
+	var tracking TrackingPenawaran
+	if err := tx.Where("id = ?", impl.TrackingPenawaranID).First(&tracking).Error; err != nil {
+		fmt.Println(">>> TrackingPenawaran tidak ditemukan, skip:", err)
 		return nil
 	}
-	jumlahBast := *followUp.TotalBAST
 
 	var adminProyekActivity Activity
 	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
@@ -331,65 +335,116 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		namaPegawai = pegawai.Nama
 	}
 
-	now := time.Now()
+	kategoriList := DetectBastKategori(tracking.JenisPenawaran)
 
-	bast := Bast{
-		ID:                  uuid.New().String(),
-		TrackingPenawaranID: impl.TrackingPenawaranID,
-		Status:              StatusOnProgress,
-		LogAktivitas: []LogBast{
-			{
-				Aksi:        "Buat BAST",
-				Keterangan:  fmt.Sprintf("BAST otomatis dibuat untuk %s setelah instalasi barang diterima (%d entry)", adminProyekActivity.Pegawai.Nama, jumlahBast),
-				PegawaiID:   a.PegawaiID,
-				NamaPegawai: namaPegawai,
-				CreatedAt:   now,
+	var perusahaan Perusahaan
+	kodePerusahaan := "XXX"
+	if err := tx.Where("id = ?", tracking.PerusahaanID).First(&perusahaan).Error; err == nil {
+		kodePerusahaan = KodePerusahaanFromNama(perusahaan.Nama)
+	}
+
+	anyBastDibuat := false
+	// PAC & FIRE dua-duanya ada -> butuh 2 input terpisah (TotalBastPAC/Fire).
+	// Kalau cuma salah satu (atau gak ada dua-duanya) -> tetap pakai field
+	// generik TotalBAST, sama kayak sebelum ada pemisahan BAST — biar gak
+	// maksa isi 2 kotak input padahal cuma butuh 1 BAST.
+	dualKategori := len(kategoriList) == 2
+
+	for _, kategori := range kategoriList {
+		// Guard idempotency per kategori: kalau Bast kategori ini buat tracking
+		// ini udah pernah dibuat, jangan dobel.
+		var existingBast Bast
+		if tx.Where("tracking_penawaran_id = ? AND kategori = ?", impl.TrackingPenawaranID, kategori).First(&existingBast).Error == nil {
+			fmt.Println(">>> BAST kategori", kategori, "sudah ada, skip:", existingBast.ID)
+			continue
+		}
+
+		var jumlahBastPtr *int
+		switch {
+		case !dualKategori:
+			jumlahBastPtr = followUp.TotalBAST
+		case kategori == KategoriBastPAC:
+			jumlahBastPtr = followUp.TotalBastPAC
+		case kategori == KategoriBastFire:
+			jumlahBastPtr = followUp.TotalBastFire
+		}
+
+		if jumlahBastPtr == nil || *jumlahBastPtr <= 0 {
+			fmt.Println(">>> Total BAST kategori", kategori, "belum diisi, skip pembuatan BAST")
+			continue
+		}
+		jumlahBast := *jumlahBastPtr
+
+		now := time.Now()
+
+		bast := Bast{
+			ID:                  uuid.New().String(),
+			TrackingPenawaranID: impl.TrackingPenawaranID,
+			Kategori:            kategori,
+			Status:              StatusOnProgress,
+			LogAktivitas: []LogBast{
+				{
+					Aksi:        "Buat BAST",
+					Keterangan:  fmt.Sprintf("BAST %s otomatis dibuat untuk %s setelah instalasi barang diterima (%d entry)", kategori, adminProyekActivity.Pegawai.Nama, jumlahBast),
+					PegawaiID:   a.PegawaiID,
+					NamaPegawai: namaPegawai,
+					CreatedAt:   now,
+				},
 			},
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	if err := tx.Create(&bast).Error; err != nil {
-		fmt.Println(">>> Gagal membuat BAST:", err)
-		return err
-	}
-
-	fmt.Println(">>> BAST dibuat:", bast.ID, "untuk tracking:", impl.TrackingPenawaranID)
-
-	for i := 0; i < jumlahBast; i++ {
-		bastActivity := Activity{
-			ID:            uuid.New().String(),
-			PegawaiID:     adminProyekActivity.PegawaiID,
-			Kategori:      KategoriAkomodasiProject,
-			Judul:         fmt.Sprintf("Pembuatan BAST #%d", i+1),
-			Deskripsi:     "Activity otomatis pembuatan BAST setelah instalasi barang diterima",
-			WaktuMulai:    now,
-			TargetSelesai: now.Add(48 * time.Hour),
-			Status:        StatusOnProgress,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			CreatedAt: now,
+			UpdatedAt: now,
 		}
 
-		if err := tx.Create(&bastActivity).Error; err != nil {
-			fmt.Println(">>> Gagal membuat Activity Admin Proyek untuk BAST entry:", err)
+		if err := tx.Create(&bast).Error; err != nil {
+			fmt.Println(">>> Gagal membuat BAST:", err)
 			return err
 		}
 
-		entry := BastEntry{
-			ID:                    uuid.New().String(),
-			BastID:                bast.ID,
-			ActivityAdminProyekID: &bastActivity.ID,
-			CreatedAt:             now,
-			UpdatedAt:             now,
-		}
+		fmt.Println(">>> BAST dibuat:", bast.ID, "kategori:", kategori, "untuk tracking:", impl.TrackingPenawaranID)
+		anyBastDibuat = true
 
-		if err := tx.Create(&entry).Error; err != nil {
-			fmt.Println(">>> Gagal membuat BastEntry:", err)
-			return err
-		}
+		for i := 0; i < jumlahBast; i++ {
+			bastActivity := Activity{
+				ID:            uuid.New().String(),
+				PegawaiID:     adminProyekActivity.PegawaiID,
+				Kategori:      KategoriAkomodasiProject,
+				Judul:         fmt.Sprintf("Pembuatan BAST %s #%d", kategori, i+1),
+				Deskripsi:     "Activity otomatis pembuatan BAST setelah instalasi barang diterima",
+				WaktuMulai:    now,
+				TargetSelesai: now.Add(48 * time.Hour),
+				Status:        StatusOnProgress,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}
 
-		fmt.Println(">>> BastEntry dibuat:", entry.ID, "activity:", bastActivity.ID)
+			if err := tx.Create(&bastActivity).Error; err != nil {
+				fmt.Println(">>> Gagal membuat Activity Admin Proyek untuk BAST entry:", err)
+				return err
+			}
+
+			noReferensi := GenerateBastKode(tx, kategori, kodePerusahaan, now.Year(), int(now.Month()))
+
+			entry := BastEntry{
+				ID:                    uuid.New().String(),
+				BastID:                bast.ID,
+				NoReferensi:           noReferensi,
+				ActivityAdminProyekID: &bastActivity.ID,
+				CreatedAt:             now,
+				UpdatedAt:             now,
+			}
+
+			if err := tx.Create(&entry).Error; err != nil {
+				fmt.Println(">>> Gagal membuat BastEntry:", err)
+				return err
+			}
+
+			fmt.Println(">>> BastEntry dibuat:", entry.ID, "kode:", noReferensi, "activity:", bastActivity.ID)
+		}
+	}
+
+	if !anyBastDibuat {
+		fmt.Println(">>> Gak ada BAST yang dibuat (total BAST belum diisi semua), skip update step")
+		return nil
 	}
 
 	// Update TrackingPenawaran ke step BAST
@@ -590,4 +645,30 @@ func handleGaransiMonthDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	return AdvanceGaransiIfReady(tx, &month, a.PegawaiID, namaPegawai)
+}
+
+// ─── Activity penagihan Termin DITERIMA → tandai termin itu ActivitySelesai,
+// lalu (kalau udah SudahDibayar juga) buat daily termin berikutnya ──────────
+
+func handleItemTerminDiterima(tx *gorm.DB, a *Activity) error {
+	var item ItemTermin
+	if err := tx.Where("activity_id = ?", a.ID).First(&item).Error; err != nil {
+		// Bukan activity penagihan termin, skip diam-diam.
+		return nil
+	}
+
+	// Guard idempotency: kalau termin ini udah pernah ditandai selesai, jangan diproses ulang.
+	if item.ActivitySelesai {
+		fmt.Println(">>> ItemTermin sudah ditandai selesai, skip:", item.ID)
+		return nil
+	}
+
+	item.ActivitySelesai = true
+	if err := tx.Model(&ItemTermin{}).Where("id = ?", item.ID).
+		Update("activity_selesai", true).Error; err != nil {
+		fmt.Println(">>> Gagal update ItemTermin.ActivitySelesai:", err)
+		return err
+	}
+
+	return AdvanceTerminIfReady(tx, &item)
 }

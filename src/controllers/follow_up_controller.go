@@ -52,9 +52,12 @@ func preloadFollowUp(trackingID string) (models.FollowUp, error) {
 func GetDetailFollowUp(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, _, _, ok := getFollowUpClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStep(models.StepFollowUp, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
 	followUp, err := preloadFollowUp(trackingID)
@@ -411,16 +414,41 @@ func InputBASTFollowup(c echo.Context) error {
 	}
 
 	var body struct {
-		TotalBAST *int `json:"total_bast"`
+		TotalBAST     *int `json:"total_bast"`
+		TotalBastPAC  *int `json:"total_bast_pac"`
+		TotalBastFire *int `json:"total_bast_fire"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
-	if body.TotalBAST == nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast wajib diisi."})
+
+	var tracking models.TrackingPenawaran
+	if err := config.DB.Where("id = ?", trackingID).First(&tracking).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Tracking penawaran tidak ditemukan."})
 	}
-	if *body.TotalBAST < 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast tidak boleh negatif."})
+
+	// PAC & FIRE dua-duanya ada -> butuh 2 input terpisah. Kalau cuma salah
+	// satu (atau gak ada dua-duanya) -> tetap 1 input generik (total_bast),
+	// sama kayak sebelum ada pemisahan BAST.
+	dualKategori := len(models.DetectBastKategori(tracking.JenisPenawaran)) == 2
+
+	if dualKategori {
+		if body.TotalBastPAC == nil && body.TotalBastFire == nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_pac atau total_bast_fire wajib diisi (minimal salah satu, tracking ini punya PAC & FIRE)."})
+		}
+		if body.TotalBastPAC != nil && *body.TotalBastPAC < 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_pac tidak boleh negatif."})
+		}
+		if body.TotalBastFire != nil && *body.TotalBastFire < 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_fire tidak boleh negatif."})
+		}
+	} else {
+		if body.TotalBAST == nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast wajib diisi."})
+		}
+		if *body.TotalBAST < 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast tidak boleh negatif."})
+		}
 	}
 
 	var followUp models.FollowUp
@@ -446,11 +474,25 @@ func InputBASTFollowup(c echo.Context) error {
 		})
 	}
 
-	followUp.TotalBAST = body.TotalBAST
+	var changes []string
+	if dualKategori {
+		if body.TotalBastPAC != nil {
+			followUp.TotalBastPAC = body.TotalBastPAC
+			changes = append(changes, fmt.Sprintf("Total BAST PAC diperbarui menjadi %d", *body.TotalBastPAC))
+		}
+		if body.TotalBastFire != nil {
+			followUp.TotalBastFire = body.TotalBastFire
+			changes = append(changes, fmt.Sprintf("Total BAST FIRE diperbarui menjadi %d", *body.TotalBastFire))
+		}
+	} else {
+		followUp.TotalBAST = body.TotalBAST
+		changes = append(changes, fmt.Sprintf("Total BAST diperbarui menjadi %d", *body.TotalBAST))
+	}
+
 	appendFollowUpLog(
 		&followUp,
 		"Total BAST Diinput",
-		fmt.Sprintf("Total BAST diperbarui menjadi %d.", *body.TotalBAST),
+		strings.Join(changes, ", ")+".",
 		pegawaiID,
 		namaPegawai,
 	)

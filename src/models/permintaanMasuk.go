@@ -96,7 +96,7 @@ type TrackingPenawaran struct {
 	FollowUp             *FollowUp             `gorm:"foreignKey:TrackingPenawaranID" json:"followUp,omitempty"`
 	Implementasi         *Implementasi         `gorm:"foreignKey:TrackingPenawaranID" json:"implementasi,omitempty"`
 	Accounting 			 *TerminPembayaran `gorm:"foreignKey:TrackingPenawaranID" json:"accounting,omitempty"`
-	Bast 				 *Bast `gorm:"foreignKey:TrackingPenawaranID" json:"bast,omitempty"`
+	Basts 				 []Bast `gorm:"foreignKey:TrackingPenawaranID" json:"basts,omitempty"`
 	Garansi 			 *Garansi `gorm:"foreignKey:TrackingPenawaranID" json:"garansi,omitempty"`
 
 	Chat []PenawaranChat `gorm:"foreignKey:TrackingPenawaranID" json:"chat,omitempty"`
@@ -230,6 +230,16 @@ type ItemTermin struct {
 	TanggalDibayar    *time.Time `                          json:"tanggalDibayar,omitempty"`
 	Keterangan        *string   `                          json:"keterangan,omitempty"`
 	Deadline          *time.Time `gorm:"index"              json:"deadline,omitempty"`
+
+	// Daily (Activity) penagihan termin ini. Cuma termin pertama yang
+	// langsung dibuatin daily begitu Accounting dibuat — termin berikutnya
+	// baru dibuatin daily-nya setelah termin sebelumnya tuntas (SudahDibayar
+	// DAN daily-nya DITERIMA, dua-duanya wajib). Sebelum itu, ActivityID-nya
+	// null — belum ada dailynya sama sekali.
+	ActivityID      *string   `gorm:"index"                                 json:"activityId,omitempty"`
+	Activity        *Activity `gorm:"foreignKey:ActivityID;references:ID"  json:"activity,omitempty"`
+	ActivitySelesai bool      `gorm:"not null;default:false"                json:"activitySelesai"`
+
 	CreatedAt         time.Time `gorm:"index"              json:"createdAt"`
 	UpdatedAt         time.Time `                          json:"updatedAt"`
 }
@@ -263,7 +273,11 @@ type FollowUp struct {
 	ActivityAdminProyek *Activity         `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
 	Status              StatusActivity    `gorm:"not null;default:'ON_PROGRESS'"               json:"status"`
 	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
-	TotalBAST 			*int 			  `gorm:"index" 									   json:"totalBast,omitempty"`
+	TotalBAST           *int              `gorm:"index" json:"totalBast,omitempty"`
+	// Diisi kalau tracking-nya punya PAC & FIRE dua-duanya (2 Bast terpisah) —
+	// kalau cuma 1 kategori atau gak ada dua-duanya, tetap pakai TotalBAST di atas.
+	TotalBastPAC        *int              `gorm:"index" json:"totalBastPAC,omitempty"`
+	TotalBastFire       *int              `gorm:"index" json:"totalBastFire,omitempty"`
 	LogAktivitas        []LogFollowUp     `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Dokumen             []PenawaranDokumen `gorm:"foreignKey:FollowUpID"                       json:"dokumen,omitempty"`
 	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`
@@ -347,10 +361,28 @@ type LogBast struct {
 
 // ─── BAST (Berita Acara Serah Terima) ──────────────────────────────────────────
 
+// KategoriBast nentuin BAST-nya kebentuk berapa & yang mana — dideteksi
+// otomatis dari JenisPenawaran tracking terkait (bukan dari BastEntry).
+// Ketentuannya cuma lihat 2 hal: "PAC Montair" -> PAC, "Generator FirePro" ->
+// FIRE. Kalau ada dua-duanya -> 2 Bast (PAC + FIRE), kalau cuma salah satu ->
+// 1 Bast kategori itu, kalau gak ada dua-duanya -> 1 Bast UMUM. Maksimal 2
+// Bast per tracking, gak pernah lebih.
+type KategoriBast string
+
+const (
+	KategoriBastPAC  KategoriBast = "PAC"
+	KategoriBastFire KategoriBast = "FIRE"
+	KategoriBastUmum KategoriBast = "UMUM"
+)
+
 type Bast struct {
 	ID                  string            `gorm:"primaryKey"                                   json:"id"`
-	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
+	TrackingPenawaranID string            `gorm:"not null;index;uniqueIndex:idx_bast_tracking_kategori" json:"trackingPenawaranId"`
 	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
+
+	// Satu tracking bisa punya sampai 2 Bast (PAC & FIRE) — unique per
+	// kombinasi tracking+kategori, bukan per tracking doang kayak dulu.
+	Kategori KategoriBast `gorm:"not null;default:UMUM;uniqueIndex:idx_bast_tracking_kategori" json:"kategori"`
 
 	Status       StatusActivity `gorm:"not null;default:ON_PROGRESS;index" json:"status"`
 	LogAktivitas []LogBast      `gorm:"serializer:json;default:'[]'"       json:"logs"`

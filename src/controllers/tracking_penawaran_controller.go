@@ -184,6 +184,8 @@ func GetTrackingPenawaranMO(c echo.Context) error {
 func GetDetailTrackingPenawaran(c echo.Context) error {
 	id := c.Param("id")
 
+	_, roleStr, divisiStr, _ := getStepAccessClaims(c)
+
 	var tracking models.TrackingPenawaran
 err := config.DB.
     Preload("Perusahaan").
@@ -200,6 +202,15 @@ err := config.DB.
 
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"message": "Tracking penawaran tidak ditemukan"})
+	}
+
+	// Endpoint ini dipakai bareng buat header wizard di semua step, jadi gak
+	// bisa langsung di-403 total kayak endpoint per-step lain. Kalau pegawainya
+	// gak berhak lihat step Permintaan Masuk, cukup redact detail
+	// PermintaanMasuk-nya aja (metadata tracking-nya sendiri tetap perlu,
+	// dipakai buat header di step lain juga).
+	if !canViewStep(models.StepPermintaanMasuk, roleStr, divisiStr) {
+		tracking.PermintaanMasuk = nil
 	}
 
 	return c.JSON(http.StatusOK, tracking)
@@ -849,8 +860,17 @@ func currentStepStatus(r models.TrackingPenawaran) models.StatusActivity {
 			return r.Implementasi.Status
 		}
 	case models.StepBAST:
-		if r.Bast != nil {
-			return r.Bast.Status
+		// Bisa ada sampai 2 Bast (PAC & FIRE) — SELESAI cuma kalau semuanya
+		// udah SELESAI, kalau ada yang masih jalan, itu yang dianggap status aktif.
+		if len(r.Basts) > 0 {
+			status := models.StatusSelesai
+			for _, b := range r.Basts {
+				if b.Status != models.StatusSelesai {
+					status = b.Status
+					break
+				}
+			}
+			return status
 		}
 	case models.StepPembayaran:
 		if r.Accounting != nil {
@@ -951,7 +971,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		Preload("Perusahaan").
 		Preload("FollowUp").
 		Preload("Implementasi").
-		Preload("Bast").
+		Preload("Basts").
 		Preload("Garansi").
 		Preload("Accounting.Items").
 		Order(orderClause).
@@ -1040,12 +1060,16 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	// Split "Pembayaran" (BAST masih berjalan) vs "Konfirmasi Selesai" (BAST
 	// udah lengkap semua entry-nya) — dua tab beda, sama-sama step=BAST, cuma
 	// beda kondisi kelengkapan. Cuma dipakai kalau filterStep-nya BAST.
+	// Tracking bisa punya sampai 2 Bast (PAC & FIRE), jadi "lengkap" berarti
+	// SEMUA Bast-nya SELESAI, bukan salah satu doang.
 	bastLengkapParam := c.QueryParam("bastLengkap")
 	if filterStep == string(models.StepBAST) && bastLengkapParam != "" {
+		hasIncompleteBastSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?)`
+		hasAnyBastSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id)`
 		if bastLengkapParam == "true" {
-			query = query.Where(`EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?)`, models.StatusSelesai)
+			query = query.Where(`NOT (`+hasIncompleteBastSQL+`) AND `+hasAnyBastSQL, models.StatusSelesai)
 		} else {
-			query = query.Where(`NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?)`, models.StatusSelesai)
+			query = query.Where(hasIncompleteBastSQL, models.StatusSelesai)
 		}
 	}
 
@@ -1065,7 +1089,7 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		Preload("Perusahaan").
 		Preload("FollowUp").
 		Preload("Implementasi").
-		Preload("Bast").
+		Preload("Basts").
 		Preload("Garansi").
 		Preload("Accounting.Items").
 		Order(orderClause).
@@ -1130,7 +1154,9 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	// persis logika yang dipakai buildPenawaranListItem.OverallStatus, cuma
 	// diterjemahin ke SQL biar bisa difilter di query (bukan di memori),
 	// soalnya SELESAI/ON_PROGRESS gak disimpan sebagai satu kolom langsung.
-	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status = ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status = ?)`
+	// "Semua Bast SELESAI" = ada minimal 1 Bast DAN gak ada satupun yang belum SELESAI
+	// (tracking bisa punya sampai 2 Bast, PAC & FIRE).
+	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status = ?)`
 	switch c.QueryParam("overallStatus") {
 	case "DIBATALKAN":
 		query = query.Where(`"TrackingPenawaran".status = ?`, models.StatusDibatalkan)
@@ -1158,7 +1184,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 		Preload("Perusahaan").
 		Preload("FollowUp").
 		Preload("Implementasi").
-		Preload("Bast").
+		Preload("Basts").
 		Preload("Garansi").
 		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
@@ -1248,11 +1274,19 @@ func buildPenawaranListItem(r models.TrackingPenawaran) PenawaranListItem {
 	}
 
 	// BAST / Konfirmasi Selesai: BAST udah terpenuhi (semua entry DITERIMA)
-	// apa belum, + progress "sudah berapa dari berapa" entry.
-	if r.Bast != nil {
-		lengkap := r.Bast.Status == models.StatusSelesai
-		item.BastLengkap = &lengkap
-		item.BastEntriesTotal, item.BastEntriesSelesai = bastEntriesProgress(r.Bast.ID)
+	// apa belum, + progress "sudah berapa dari berapa" entry — digabung dari
+	// semua Bast tracking ini (bisa 1 atau 2, PAC & FIRE dihitung bareng).
+	allBastLengkap := len(r.Basts) > 0
+	for _, b := range r.Basts {
+		if b.Status != models.StatusSelesai {
+			allBastLengkap = false
+		}
+		total, selesai := bastEntriesProgress(b.ID)
+		item.BastEntriesTotal += total
+		item.BastEntriesSelesai += selesai
+	}
+	if len(r.Basts) > 0 {
+		item.BastLengkap = &allBastLengkap
 	}
 
 	// Garansi: periode mulai/selesai, status tuntas apa belum, + progress
@@ -1278,7 +1312,7 @@ func buildPenawaranListItem(r models.TrackingPenawaran) PenawaranListItem {
 	switch {
 	case r.Status == models.StatusDibatalkan:
 		item.OverallStatus = "DIBATALKAN"
-	case r.Bast != nil && r.Bast.Status == models.StatusSelesai &&
+	case allBastLengkap &&
 		r.Garansi != nil && r.Garansi.Status == models.StatusGaransiSelesai:
 		item.OverallStatus = "SELESAI"
 	default:

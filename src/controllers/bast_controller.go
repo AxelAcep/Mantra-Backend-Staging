@@ -14,10 +14,14 @@ import (
 	"mantra/src/models"
 )
 
+// Satu tracking bisa punya sampai 2 Bast (PAC & FIRE, tergantung Jenis
+// Penawaran-nya — lihat models.DetectBastKategori), jadi endpoint di file ini
+// selalu kerja dengan LIST Bast, bukan satu Bast tunggal kayak dulu.
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-func preloadBast(trackingID string) (*models.Bast, error) {
-	var bast models.Bast
+func preloadBastList(trackingID string) ([]models.Bast, error) {
+	var basts []models.Bast
 	err := config.DB.
 		Where("tracking_penawaran_id = ?", trackingID).
 		Preload("TrackingPenawaran.Perusahaan").
@@ -30,12 +34,34 @@ func preloadBast(trackingID string) (*models.Bast, error) {
 		Preload("Entries.ActivityAdminProyek.Dokumen.Pegawai").
 		Preload("Entries.ActivityAdminProyek.Children").
 		Preload("Entries.ActivityAdminProyek.Children.Pegawai").
-		First(&bast).Error
+		Order("created_at ASC").
+		Find(&basts).Error
 
 	if err != nil {
 		return nil, err
 	}
-	return &bast, nil
+	return basts, nil
+}
+
+// findBastForEntryTarget nentuin Bast mana yang dituju buat operasi yang
+// perlu tau kategori (mis. tambah entry baru): kalau tracking cuma punya 1
+// Bast, langsung dipakai; kalau ada 2 (PAC & FIRE), kategori wajib disebut.
+func findBastForEntryTarget(basts []models.Bast, kategoriParam string) (*models.Bast, error) {
+	if len(basts) == 0 {
+		return nil, fmt.Errorf("Data BAST tidak ditemukan.")
+	}
+	if len(basts) == 1 {
+		return &basts[0], nil
+	}
+	if kategoriParam == "" {
+		return nil, fmt.Errorf("Tracking ini punya lebih dari 1 BAST (PAC & FIRE) — sebutkan kategori BAST-nya.")
+	}
+	for i := range basts {
+		if string(basts[i].Kategori) == strings.ToUpper(kategoriParam) {
+			return &basts[i], nil
+		}
+	}
+	return nil, fmt.Errorf("BAST kategori %s tidak ditemukan.", kategoriParam)
 }
 
 func appendBastLog(bast *models.Bast, aksi, keterangan, pegawaiID, namaPegawai string) {
@@ -54,20 +80,25 @@ func appendBastLog(bast *models.Bast, aksi, keterangan, pegawaiID, namaPegawai s
 }
 
 // ── Get Detail ──────────────────────────────────────────────────────────────
+// Balikin SEMUA Bast tracking ini (1 kalau UMUM/cuma PAC/cuma FIRE, 2 kalau
+// PAC & FIRE dua-duanya).
 
 func GetDetailBast(c echo.Context) error {
 	trackingID := c.Param("id")
-	_, _, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, _, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
+	if !canViewStepForTracking(models.StepBAST, roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
 
-	bast, err := preloadBast(trackingID)
-	if err != nil {
+	basts, err := preloadBastList(trackingID)
+	if err != nil || len(basts) == 0 {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data BAST tidak ditemukan."})
 	}
 
-	return c.JSON(http.StatusOK, bast)
+	return c.JSON(http.StatusOK, basts)
 }
 
 // ── Create Entry ─────────────────────────────────────────────────────────────
@@ -81,6 +112,7 @@ func CreateBastEntry(c echo.Context) error {
 	}
 
 	var body struct {
+		Kategori           string `json:"kategori"` // wajib kalau tracking punya 2 BAST (PAC & FIRE)
 		NoReferensi        string `json:"noReferensi"`
 		TanggalTerbit      string `json:"tanggalTerbit"`
 		TanggalSerahTerima string `json:"tanggalSerahTerima"`
@@ -89,15 +121,29 @@ func CreateBastEntry(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
 
-	bast, err := preloadBast(trackingID)
-	if err != nil {
+	basts, err := preloadBastList(trackingID)
+	if err != nil || len(basts) == 0 {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data BAST tidak ditemukan."})
+	}
+
+	bast, err := findBastForEntryTarget(basts, body.Kategori)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// No. Referensi auto-generated (BAST-[PAC/FIR-]YYMM-XXX-###) kalau gak
+	// dikirim manual — biar konsisten walau entry ditambah manual dari FE.
+	noReferensi := body.NoReferensi
+	if strings.TrimSpace(noReferensi) == "" {
+		kodePerusahaan := models.KodePerusahaanFromNama(bast.TrackingPenawaran.Perusahaan.Nama)
+		now := time.Now()
+		noReferensi = models.GenerateBastKode(config.DB, bast.Kategori, kodePerusahaan, now.Year(), int(now.Month()))
 	}
 
 	entry := models.BastEntry{
 		ID:                 uuid.New().String(),
 		BastID:             bast.ID,
-		NoReferensi:        body.NoReferensi,
+		NoReferensi:        noReferensi,
 		TanggalTerbit:      parseDate(body.TanggalTerbit),
 		TanggalSerahTerima: parseDate(body.TanggalSerahTerima),
 		CreatedAt:          time.Now(),
@@ -111,12 +157,12 @@ func CreateBastEntry(c echo.Context) error {
 	appendBastLog(
 		bast,
 		"Tambah Entry BAST",
-		fmt.Sprintf("Entry BAST baru ditambahkan dengan No. Referensi '%s'.", body.NoReferensi),
+		fmt.Sprintf("Entry BAST baru ditambahkan dengan No. Referensi '%s'.", noReferensi),
 		pegawaiID,
 		namaPegawai,
 	)
 
-	updated, _ := preloadBast(trackingID)
+	updated, _ := preloadBastList(trackingID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "Entry BAST berhasil ditambahkan.",
@@ -144,16 +190,17 @@ func UpdateDetailBast(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
 
-	bast, err := preloadBast(trackingID)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data BAST tidak ditemukan."})
+	var entry models.BastEntry
+	if err := config.DB.Where("id = ?", entryID).First(&entry).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Entry BAST tidak ditemukan."})
 	}
 
-	var entry models.BastEntry
+	// Pastikan entry ini emang milik BAST punya tracking di URL (scoping/auth).
+	var bast models.Bast
 	if err := config.DB.
-		Where("id = ? AND bast_id = ?", entryID, bast.ID).
-		First(&entry).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Entry BAST tidak ditemukan."})
+		Where("id = ? AND tracking_penawaran_id = ?", entry.BastID, trackingID).
+		First(&bast).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data BAST tidak ditemukan."})
 	}
 
 	oldNoReferensi := entry.NoReferensi
@@ -180,9 +227,9 @@ func UpdateDetailBast(c echo.Context) error {
 		keterangan = strings.Join(changes, ", ")
 	}
 
-	appendBastLog(bast, "Update Info BAST", keterangan, pegawaiID, namaPegawai)
+	appendBastLog(&bast, "Update Info BAST", keterangan, pegawaiID, namaPegawai)
 
-	updated, _ := preloadBast(trackingID)
+	updated, _ := preloadBastList(trackingID)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Detail BAST berhasil diperbarui.",

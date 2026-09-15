@@ -125,9 +125,12 @@ func getKadivPGA_ID() string {
 
 func GetDetailImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStepForTracking(models.StepImplementasi, roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
 	impl, err := preloadImplementasi(trackingID)

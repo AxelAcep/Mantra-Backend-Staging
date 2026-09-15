@@ -29,6 +29,14 @@ func hitungTotalPersentase(items []models.ItemTermin) float64 {
 func GetAccounting(c echo.Context) error {
 	trackingID := c.Param("id")
 
+	_, roleStr, divisiStr, ok := getStepAccessClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStep(models.StepPembayaran, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
+
 	var termin models.TerminPembayaran
 	err := config.DB.
 		Preload("Items", func(db *gorm.DB) *gorm.DB {
@@ -87,6 +95,14 @@ type ItemTerminInput struct {
 func CreateAccounting(c echo.Context) error {
 	trackingID := c.Param("id")
 
+	_, roleStr, divisiStr, ok := getStepAccessClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStep(models.StepPembayaran, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
+
 	// Cek persetujuan manajemen sudah DONE
 	var persetujuan models.PersetujuanManajemen
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&persetujuan).Error; err != nil {
@@ -134,6 +150,11 @@ func CreateAccounting(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Pegawai tidak ditemukan"})
 	}
 
+	var tracking models.TrackingPenawaran
+	if err := config.DB.Where("id = ?", trackingID).First(&tracking).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Tracking penawaran tidak ditemukan"})
+	}
+
 	termin := models.TerminPembayaran{
 		ID:                  uuid.New().String(),
 		TrackingPenawaranID: trackingID,
@@ -155,7 +176,17 @@ func CreateAccounting(c echo.Context) error {
 	}
 	termin.Items = items
 
-	if err := config.DB.Create(&termin).Error; err != nil {
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&termin).Error; err != nil {
+			return err
+		}
+
+		// Termin berjalan berurutan mirip bulan Garansi — cuma termin
+		// pertama yang langsung dapet daily, termin berikutnya nyusul
+		// otomatis (AdvanceTerminIfReady) setelah termin sebelumnya tuntas.
+		return models.CreateItemTerminActivity(tx, &termin.Items[0], pegawaiID, tracking.NomorPenawaran)
+	})
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -168,9 +199,33 @@ func CreateAccounting(c echo.Context) error {
 func UpdateAccounting(c echo.Context) error {
 	trackingID := c.Param("id")
 
+	_, roleStr, divisiStr, ok := getStepAccessClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStep(models.StepPembayaran, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
+
 	var termin models.TerminPembayaran
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&termin).Error; err != nil {
+	if err := config.DB.
+		Preload("Items").
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&termin).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data accounting tidak ditemukan"})
+	}
+
+	// Begitu ada termin yang beneran udah kelar (dibayar atau daily-nya
+	// disetujui), gak boleh replace total daftar termin-nya lagi — bisa bikin
+	// progress yang udah kejadian jadi nyangkut ke termin yang salah. Selama
+	// belum ada progress beneran (termin-1 masih ON_PROGRESS daily-nya),
+	// tetep boleh dikoreksi.
+	for _, it := range termin.Items {
+		if it.SudahDibayar || it.ActivitySelesai {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "Ada termin yang sudah berjalan (dibayar/disetujui), daftar termin tidak bisa diubah lagi.",
+			})
+		}
 	}
 
 	var input struct {
@@ -195,6 +250,17 @@ func UpdateAccounting(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Total persentase harus 100%"})
 	}
 
+	// Daily termin-1 (kalau udah sempet dibuat pas create, masih ON_PROGRESS/
+	// belum disetujui — dijamin sama guard di atas) dipertahankan biar gak
+	// yatim piatu setelah list termin di-replace.
+	var existingActivityIDTermin1 *string
+	for _, it := range termin.Items {
+		if it.Index == 1 {
+			existingActivityIDTermin1 = it.ActivityID
+			break
+		}
+	}
+
 	// Hapus items lama, insert baru
 	if err := config.DB.Where("termin_pembayaran_id = ?", termin.ID).Delete(&models.ItemTermin{}).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -211,6 +277,9 @@ func UpdateAccounting(c echo.Context) error {
 			Keterangan:         inp.Keterangan,
 			Deadline:           inp.Deadline,
 		}
+		if i == 0 {
+			newItems[i].ActivityID = existingActivityIDTermin1
+		}
 	}
 
 	if err := config.DB.Create(&newItems).Error; err != nil {
@@ -226,16 +295,48 @@ func UpdateAccounting(c echo.Context) error {
 func BayarItemTermin(c echo.Context) error {
 	itemID := c.Param("itemId")
 
+	_, roleStr, divisiStr, ok := getStepAccessClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStep(models.StepPembayaran, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
+
 	var item models.ItemTermin
 	if err := config.DB.First(&item, "id = ?", itemID).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Item tidak ditemukan"})
 	}
 
-	now := time.Now()
-	item.SudahDibayar = true
-	item.TanggalDibayar = &now
+	if item.SudahDibayar {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Termin ini sudah dibayar."})
+	}
 
-	if err := config.DB.Save(&item).Error; err != nil {
+	// Belum ada daily-nya sama sekali = termin ini belum "mulai" (masih
+	// nunggu termin sebelumnya tuntas) — belum bisa ditandai dibayar.
+	if item.ActivityID == nil || *item.ActivityID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Termin ini belum berjalan — selesaikan termin sebelumnya (dibayar + daily disetujui) dulu.",
+		})
+	}
+
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		item.SudahDibayar = true
+		item.TanggalDibayar = &now
+
+		if err := tx.Model(&models.ItemTermin{}).Where("id = ?", item.ID).
+			Select("sudah_dibayar", "tanggal_dibayar").
+			Updates(models.ItemTermin{
+				SudahDibayar:   item.SudahDibayar,
+				TanggalDibayar: item.TanggalDibayar,
+			}).Error; err != nil {
+			return err
+		}
+
+		return models.AdvanceTerminIfReady(tx, &item)
+	})
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 

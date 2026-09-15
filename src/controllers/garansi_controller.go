@@ -41,9 +41,12 @@ func preloadGaransi(trackingID string) (*models.Garansi, error) {
 
 func GetDetailGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
-	_, _, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, _, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canViewStepForTracking(models.StepGaransi, roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
 	garansi, err := preloadGaransi(trackingID)

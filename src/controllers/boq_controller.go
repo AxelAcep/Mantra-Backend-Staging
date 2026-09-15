@@ -32,19 +32,7 @@ func getBoQClaims(c echo.Context) (pegawaiID, namaPegawai, roleStr, divisiStr st
 }
 
 func canAccessBoQ(roleStr, divisiStr string) bool {
-	if roleStr == "MASTER" {
-		return true
-	}
-	if roleStr == "SUPERVISI" {
-		return true
-	}
-	if divisiStr == string(models.DivisiPresales) {
-		return true
-	}
-		if divisiStr == string(models.DivisiAdminSekertariat) {
-		return true
-	}
-	return false
+	return canViewStep(models.StepPenyusunanBoQ, roleStr, divisiStr)
 }
 
 func appendBoQLog(boq *models.PenyusunanBoQ, aksi, keterangan, pegawaiID, namaPegawai string) {
