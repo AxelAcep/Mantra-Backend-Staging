@@ -12,7 +12,7 @@ import (
 // bareng di semua GetDetailXxx per step. MO (MANAGER_OPERASIONAL), DIREKTUR,
 // KOMISARIS, dan role MASTER selalu boleh akses semua tahap.
 //
-// "Admin Proyek" (step Implementasi/BAST/Garansi) BUKAN divisi tetap — itu
+// "Admin Proyek" (step Follow Up/Implementasi/BAST/Garansi) BUKAN divisi tetap — itu
 // pegawai spesifik yang di-assign per-tracking lewat AssignAdminProyek — jadi
 // dicek terpisah (isAssignedAdminProyek), bukan lewat daftar divisi statis.
 
@@ -78,14 +78,14 @@ func isAssignedAdminProyek(pegawaiID, trackingID string) bool {
 }
 
 // canViewStepForTracking = canViewStep + pengecualian Admin Proyek buat step
-// Implementasi/BAST/Garansi (satu-satunya tahap yang aksesnya tergantung
-// assignment per-tracking, bukan cuma divisi).
+// Follow Up/Implementasi/BAST/Garansi (tahap-tahap yang aksesnya bisa
+// tergantung assignment per-tracking, bukan cuma divisi).
 func canViewStepForTracking(step models.StepPenawaran, roleStr, divisiStr, pegawaiID, trackingID string) bool {
 	if canViewStep(step, roleStr, divisiStr) {
 		return true
 	}
 	switch step {
-	case models.StepImplementasi, models.StepBAST, models.StepGaransi:
+	case models.StepFollowUp, models.StepImplementasi, models.StepBAST, models.StepGaransi:
 		return isAssignedAdminProyek(pegawaiID, trackingID)
 	}
 	return false

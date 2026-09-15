@@ -56,7 +56,7 @@ func GetDetailFollowUp(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
-	if !canViewStep(models.StepFollowUp, roleStr, divisiStr) {
+	if !canViewStepForTracking(models.StepFollowUp, roleStr, divisiStr, pegawaiID, trackingID) {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
