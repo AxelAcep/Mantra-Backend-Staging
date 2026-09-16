@@ -1579,6 +1579,7 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 		CustomerPhone string `json:"customerPhone"`
 		CustomerEmail string `json:"customerEmail"`
 		LokasiProyek  string `json:"lokasiProyek"`
+		NomorPenawaran string `json:"nomorPenawaran"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
@@ -1587,10 +1588,11 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 	if err := config.DB.Model(&models.TrackingPenawaran{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"customer_name":  body.CustomerName,
-			"customer_phone": body.CustomerPhone,
-			"customer_email": body.CustomerEmail,
-			"lokasi_proyek":  body.LokasiProyek,
+			"customer_name":   body.CustomerName,
+			"customer_phone":  body.CustomerPhone,
+			"customer_email":  body.CustomerEmail,
+			"lokasi_proyek":   body.LokasiProyek,
+			"nomor_penawaran": body.NomorPenawaran,
 		}).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update detail."})
 	}
