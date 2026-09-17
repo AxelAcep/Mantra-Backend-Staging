@@ -1604,14 +1604,25 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 		}
 	}
 
-	updates := map[string]interface{}{
-		"customer_name":  body.CustomerName,
-		"customer_phone": body.CustomerPhone,
-		"customer_email": body.CustomerEmail,
-		"lokasi_proyek":  body.LokasiProyek,
+	updates := map[string]interface{}{}
+	if body.CustomerName != "" {
+		updates["customer_name"] = body.CustomerName
+	}
+	if body.CustomerPhone != "" {
+		updates["customer_phone"] = body.CustomerPhone
+	}
+	if body.CustomerEmail != "" {
+		updates["customer_email"] = body.CustomerEmail
+	}
+	if body.LokasiProyek != "" {
+		updates["lokasi_proyek"] = body.LokasiProyek
 	}
 	if body.NomorPenawaran != "" {
 		updates["nomor_penawaran"] = body.NomorPenawaran
+	}
+
+	if len(updates) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tidak ada field yang diupdate."})
 	}
 
 	if err := config.DB.Model(&models.TrackingPenawaran{}).
