@@ -41,7 +41,7 @@ func todayAt5PM() time.Time {
 // ─── Request DTO ──────────────────────────────────────────────────────────────
 
 type CreateTrackingPenawaranRequest struct {
-	NomorPenawaran string                  `json:"nomorPenawaran" validate:"required"`
+	NomorPenawaran string                  `json:"nomorPenawaran"`
 	PerusahaanID   string                  `json:"perusahaanId"   validate:"required"`
 	LokasiProyek   string                  `json:"lokasiProyek"   validate:"required"`
 	CustomerName   string                  `json:"customerName"   validate:"required"`
@@ -64,9 +64,16 @@ func CreateTrackingPenawaran(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Request tidak valid"})
 	}
 
-	var existing models.TrackingPenawaran
-	if err := config.DB.Where(`"nomorPenawaran" = ?`, req.NomorPenawaran).First(&existing).Error; err == nil {
-		return c.JSON(http.StatusConflict, map[string]string{"message": "Nomor penawaran sudah digunakan"})
+	// Nomor penawaran diisi belakangan (bisa PreSales, MO, Direktur, atau
+	// Komisaris tergantung step) lewat UpdateDetailTrackingPenawaran, jadi di
+	// sini optional. Kalau kosong, dipakein placeholder unik dari trackingID
+	// biar gak bentrok sama constraint unique/not-null di kolom nomor_penawaran.
+	nomorPenawaran := strings.TrimSpace(req.NomorPenawaran)
+	if nomorPenawaran != "" {
+		var existing models.TrackingPenawaran
+		if err := config.DB.Where(`"nomor_penawaran" = ?`, nomorPenawaran).First(&existing).Error; err == nil {
+			return c.JSON(http.StatusConflict, map[string]string{"message": "Nomor penawaran sudah digunakan"})
+		}
 	}
 
 	var perusahaan models.Perusahaan
@@ -85,9 +92,12 @@ func CreateTrackingPenawaran(c echo.Context) error {
 	}()
 
 	trackingID := uuid.NewString()
+	if nomorPenawaran == "" {
+		nomorPenawaran = "PENDING-" + trackingID
+	}
 	tracking := models.TrackingPenawaran{
 		ID:             trackingID,
-		NomorPenawaran: req.NomorPenawaran,
+		NomorPenawaran: nomorPenawaran,
 		PerusahaanID:   req.PerusahaanID,
 		MarketingID:    pegawaiID,
 		LokasiProyek:   req.LokasiProyek,
@@ -107,10 +117,10 @@ func CreateTrackingPenawaran(c echo.Context) error {
 		ID:            activityID,
 		PegawaiID:     pegawaiID,
 		Kategori:      models.KategoriQuotation,
-		TerkaitPO:     &req.NomorPenawaran,
+		TerkaitPO:     &nomorPenawaran,
 		Perusahaan:    &perusahaan.Nama,
 		Judul:         "Permintaan Masuk oleh " + perusahaan.Nama,
-		Deskripsi:     "Activity otomatis dari penawaran #" + req.NomorPenawaran,
+		Deskripsi:     "Activity otomatis dari penawaran #" + nomorPenawaran,
 		WaktuMulai:    time.Now(),
 		TargetSelesai: todayAt5PM(),
 		Status:        models.StatusOnProgress,
@@ -1585,15 +1595,28 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
 
+	body.NomorPenawaran = strings.TrimSpace(body.NomorPenawaran)
+	if body.NomorPenawaran != "" {
+		var existing models.TrackingPenawaran
+		if err := config.DB.Where(`"nomor_penawaran" = ? AND "id" != ?`, body.NomorPenawaran, id).
+			First(&existing).Error; err == nil {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "Nomor penawaran sudah digunakan."})
+		}
+	}
+
+	updates := map[string]interface{}{
+		"customer_name":  body.CustomerName,
+		"customer_phone": body.CustomerPhone,
+		"customer_email": body.CustomerEmail,
+		"lokasi_proyek":  body.LokasiProyek,
+	}
+	if body.NomorPenawaran != "" {
+		updates["nomor_penawaran"] = body.NomorPenawaran
+	}
+
 	if err := config.DB.Model(&models.TrackingPenawaran{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"customer_name":   body.CustomerName,
-			"customer_phone":  body.CustomerPhone,
-			"customer_email":  body.CustomerEmail,
-			"lokasi_proyek":   body.LokasiProyek,
-			"nomor_penawaran": body.NomorPenawaran,
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update detail."})
 	}
 
