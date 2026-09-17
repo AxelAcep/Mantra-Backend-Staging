@@ -546,23 +546,26 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
-	// Guard idempotency Garansi (jaga-jaga race/re-trigger).
+	// Guard idempotency Garansi — di-scope per (tracking, kategori) karena
+	// satu tracking bisa punya sampai 2 Garansi (PAC & FIRE), masing-masing
+	// dipicu Bast kategorinya sendiri-sendiri.
 	var existingGaransi Garansi
-	if tx.Where("tracking_penawaran_id = ?", bast.TrackingPenawaranID).First(&existingGaransi).Error == nil {
-		fmt.Println(">>> Garansi sudah ada, skip:", existingGaransi.ID)
+	if tx.Where("tracking_penawaran_id = ? AND kategori_bast = ?", bast.TrackingPenawaranID, bast.Kategori).First(&existingGaransi).Error == nil {
+		fmt.Println(">>> Garansi kategori", bast.Kategori, "sudah ada, skip:", existingGaransi.ID)
 		return nil
 	}
 
 	garansi := Garansi{
 		ID:                  uuid.New().String(),
 		TrackingPenawaranID: bast.TrackingPenawaranID,
+		KategoriBast:        bast.Kategori,
 		BastID:              bast.ID,
 		PICID:               picID,
 		Status:              StatusGaransiBelumDikonfigurasi,
 		LogAktivitas: []LogGaransi{
 			{
 				Aksi:        "Buat Garansi",
-				Keterangan:  "Garansi otomatis dibuat setelah entry pertama BAST selesai (berjalan paralel dengan entry BAST lainnya), menunggu konfigurasi tahun & bulan mulai",
+				Keterangan:  fmt.Sprintf("Garansi %s otomatis dibuat setelah entry pertama BAST selesai (berjalan paralel dengan entry BAST lainnya), menunggu konfigurasi tahun & bulan mulai", bast.Kategori),
 				PegawaiID:   a.PegawaiID,
 				NamaPegawai: namaPegawai,
 				CreatedAt:   now,

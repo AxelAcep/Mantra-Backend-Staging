@@ -25,8 +25,28 @@ const (
 	KategoriPACLuarKota   KategoriGaransi = "PAC_LUAR_KOTA"
 	KategoriFireDalamKota KategoriGaransi = "FIRE_DALAM_KOTA"
 	KategoriFireLuarKota  KategoriGaransi = "FIRE_LUAR_KOTA"
-	KategoriTidakAda      KategoriGaransi = "TIDAK_ADA"
+	// KategoriUmum dipakai kalau Bast pemicunya UMUM (gak ada PAC/FIRE
+	// kedetect dari Jenis Penawaran) — garansi bulanan biasa, gak ada
+	// pembedaan dalam/luar kota.
+	KategoriUmum     KategoriGaransi = "UMUM"
+	KategoriTidakAda KategoriGaransi = "TIDAK_ADA"
 )
+
+// AllowedKategoriGaransi nentuin pilihan kategori garansi (manual, dalam/luar
+// kota) yang boleh dipilih user — dibatasin sesuai KategoriBast si Garansi
+// (yang udah otomatis ke-detect dari Bast pemicunya). "Tidak Ada" selalu jadi
+// opsi tambahan di semua kategori, buat override "proyek ini emang gak ada
+// garansi" kapan pun dibutuhkan.
+func AllowedKategoriGaransi(kategoriBast KategoriBast) []KategoriGaransi {
+	switch kategoriBast {
+	case KategoriBastPAC:
+		return []KategoriGaransi{KategoriPACDalamKota, KategoriPACLuarKota, KategoriTidakAda}
+	case KategoriBastFire:
+		return []KategoriGaransi{KategoriFireDalamKota, KategoriFireLuarKota, KategoriTidakAda}
+	default: // UMUM
+		return []KategoriGaransi{KategoriUmum, KategoriTidakAda}
+	}
+}
 
 // ─── Log Garansi ──────────────────────────────────────────────────────────────
 
@@ -43,17 +63,26 @@ type LogGaransi struct {
 // BELUM_DIKONFIGURASI sampai user input LamaTahun + BulanMulai/TahunMulai.
 
 type Garansi struct {
-	ID                  string            `gorm:"primaryKey"                                   json:"id"`
-	TrackingPenawaranID string            `gorm:"not null;uniqueIndex;index"                   json:"trackingPenawaranId"`
-	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID" json:"trackingPenawaran,omitempty"`
-	BastID              string            `gorm:"not null;index"                               json:"bastId"`
-	Bast                Bast              `gorm:"foreignKey:BastID;references:ID"              json:"bast,omitempty"`
+	ID                  string            `gorm:"primaryKey"                                                              json:"id"`
+	TrackingPenawaranID string            `gorm:"not null;index;uniqueIndex:idx_garansi_tracking_kategoribast"           json:"trackingPenawaranId"`
+	TrackingPenawaran   TrackingPenawaran `gorm:"foreignKey:TrackingPenawaranID;references:ID"                           json:"trackingPenawaran,omitempty"`
+	BastID              string            `gorm:"not null;index"                                                          json:"bastId"`
+	Bast                Bast              `gorm:"foreignKey:BastID;references:ID"                                        json:"bast,omitempty"`
+
+	// Kategori inti (PAC/FIRE/UMUM) — otomatis ke-detect dari Bast yang
+	// men-trigger Garansi ini (persis mekanisme DetectBastKategori di BAST).
+	// Satu tracking bisa punya sampai 2 Garansi (PAC & FIRE) kalau BAST-nya
+	// juga kebentuk 2 — unique per kombinasi tracking+kategori, bukan per
+	// tracking doang.
+	KategoriBast KategoriBast `gorm:"not null;default:UMUM;uniqueIndex:idx_garansi_tracking_kategoribast" json:"kategoriBast"`
 
 	PICID string  `gorm:"not null;index"                  json:"picId"`
 	PIC   Pegawai `gorm:"foreignKey:PICID;references:ID" json:"pic,omitempty"`
 
 	Status StatusGaransi `gorm:"not null;default:BELUM_DIKONFIGURASI;index" json:"status"`
 
+	// Pilihan manual dalam/luar kota (atau UMUM/Tidak Ada) — opsinya
+	// dibatasin sesuai KategoriBast, lihat AllowedKategoriGaransi.
 	KategoriGaransi KategoriGaransi `gorm:"not null;default:''" json:"kategoriGaransi"`
 
 	// Diisi manual lewat endpoint konfigurasi timeline
@@ -115,6 +144,8 @@ func KategoriSlotPattern(kategori KategoriGaransi) (kunjunganPerTahun int, bulan
 		return 4, []int{1, 4, 7, 10}
 	case KategoriFireLuarKota:
 		return 2, []int{1, 7}
+	case KategoriUmum:
+		return 12, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	default:
 		return 0, nil
 	}

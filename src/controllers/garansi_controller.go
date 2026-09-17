@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,10 +14,14 @@ import (
 	"mantra/src/models"
 )
 
+// Satu tracking bisa punya sampai 2 Garansi (PAC & FIRE, tergantung Bast yang
+// men-trigger-nya — lihat models.DetectBastKategori), jadi endpoint di file
+// ini selalu kerja dengan LIST Garansi, bukan satu Garansi tunggal.
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-func preloadGaransi(trackingID string) (*models.Garansi, error) {
-	var garansi models.Garansi
+func preloadGaransiList(trackingID string) ([]models.Garansi, error) {
+	var garansis []models.Garansi
 	err := config.DB.
 		Where("tracking_penawaran_id = ?", trackingID).
 		Preload("TrackingPenawaran.Perusahaan").
@@ -29,15 +34,39 @@ func preloadGaransi(trackingID string) (*models.Garansi, error) {
 		Preload("Months.Activity.Pegawai").
 		Preload("Months.Activity.Dokumen").
 		Preload("Months.Activity.Dokumen.Pegawai").
-		First(&garansi).Error
+		Order("created_at ASC").
+		Find(&garansis).Error
 
 	if err != nil {
 		return nil, err
 	}
-	return &garansi, nil
+	return garansis, nil
+}
+
+// findGaransiForTarget nentuin Garansi mana yang dituju: kalau tracking cuma
+// punya 1 Garansi, langsung dipakai; kalau ada 2 (PAC & FIRE), kategoriBast
+// wajib disebut.
+func findGaransiForTarget(garansis []models.Garansi, kategoriBastParam string) (*models.Garansi, error) {
+	if len(garansis) == 0 {
+		return nil, fmt.Errorf("Data Garansi tidak ditemukan.")
+	}
+	if len(garansis) == 1 {
+		return &garansis[0], nil
+	}
+	if kategoriBastParam == "" {
+		return nil, fmt.Errorf("Tracking ini punya lebih dari 1 Garansi (PAC & FIRE) — sebutkan kategori Garansi-nya.")
+	}
+	for i := range garansis {
+		if string(garansis[i].KategoriBast) == strings.ToUpper(kategoriBastParam) {
+			return &garansis[i], nil
+		}
+	}
+	return nil, fmt.Errorf("Garansi kategori %s tidak ditemukan.", kategoriBastParam)
 }
 
 // ── Get Detail (tracking status per bulan, logbook, dokumen pendukung) ───────
+// Balikin SEMUA Garansi tracking ini (1 kalau UMUM/cuma PAC/cuma FIRE, 2
+// kalau PAC & FIRE dua-duanya).
 
 func GetDetailGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -49,15 +78,15 @@ func GetDetailGaransi(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
-	garansi, err := preloadGaransi(trackingID)
-	if err != nil {
+	garansis, err := preloadGaransiList(trackingID)
+	if err != nil || len(garansis) == 0 {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
 	}
 
-	return c.JSON(http.StatusOK, garansi)
+	return c.JSON(http.StatusOK, garansis)
 }
 
-// ── Konfigurasi Timeline (input lama tahun + bulan/tahun mulai) ──────────────
+// ── Konfigurasi Timeline (input kategori dalam/luar kota + lama tahun + bulan/tahun mulai) ──
 
 func KonfigurasiGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -68,6 +97,7 @@ func KonfigurasiGaransi(c echo.Context) error {
 	}
 
 	var body struct {
+		KategoriBast    string                 `json:"kategoriBast"` // wajib kalau tracking punya 2 Garansi
 		KategoriGaransi models.KategoriGaransi `json:"kategoriGaransi"`
 		LamaTahun       int                    `json:"lamaTahun"`
 		BulanMulai      int                    `json:"bulanMulai"`
@@ -77,15 +107,29 @@ func KonfigurasiGaransi(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
 	}
 
-	validKategori := map[models.KategoriGaransi]bool{
-		models.KategoriPACDalamKota:  true,
-		models.KategoriPACLuarKota:   true,
-		models.KategoriFireDalamKota: true,
-		models.KategoriFireLuarKota:  true,
-		models.KategoriTidakAda:      true,
+	garansis, err := preloadGaransiList(trackingID)
+	if err != nil || len(garansis) == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
 	}
-	if !validKategori[body.KategoriGaransi] {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Kategori garansi tidak valid."})
+
+	garansi, err := findGaransiForTarget(garansis, body.KategoriBast)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Opsi kategori garansi dibatasin sesuai KategoriBast Garansi ini (PAC ->
+	// dalam/luar kota PAC, FIRE -> dalam/luar kota FIRE, UMUM -> generik) —
+	// "Tidak Ada" selalu boleh dipilih di kategori manapun sebagai override.
+	allowed := models.AllowedKategoriGaransi(garansi.KategoriBast)
+	isValid := false
+	for _, k := range allowed {
+		if k == body.KategoriGaransi {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Kategori garansi tidak valid untuk Bast kategori ini."})
 	}
 
 	if body.KategoriGaransi != models.KategoriTidakAda {
@@ -100,10 +144,6 @@ func KonfigurasiGaransi(c echo.Context) error {
 		}
 	}
 
-	var garansi models.Garansi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&garansi).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
-	}
 	if garansi.Status != models.StatusGaransiBelumDikonfigurasi {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Garansi sudah dikonfigurasi sebelumnya."})
 	}
@@ -128,7 +168,7 @@ func KonfigurasiGaransi(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengkonfigurasi garansi."})
 		}
-		updated, _ := preloadGaransi(trackingID)
+		updated, _ := preloadGaransiList(trackingID)
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Garansi dikonfigurasi sebagai tidak ada garansi.",
 			"data":    updated,
@@ -137,7 +177,7 @@ func KonfigurasiGaransi(c echo.Context) error {
 
 	_, bulanOffsets := models.KategoriSlotPattern(body.KategoriGaransi)
 
-	err := config.DB.Transaction(func(tx *gorm.DB) error {
+	err = config.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		bulanKe := 0
 
@@ -196,7 +236,7 @@ func KonfigurasiGaransi(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengkonfigurasi timeline Garansi."})
 	}
 
-	updated, _ := preloadGaransi(trackingID)
+	updated, _ := preloadGaransiList(trackingID)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Timeline Garansi berhasil dikonfigurasi.",
@@ -205,6 +245,8 @@ func KonfigurasiGaransi(c echo.Context) error {
 }
 
 // ── Update Tanggal Kunjungan per Bulan ───────────────────────────────────────
+// monthId udah cukup buat nemuin Garansi mana (GaransiMonth->GaransiID), jadi
+// gak perlu parameter kategoriBast di sini.
 
 func UpdateTanggalKunjunganGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -227,14 +269,14 @@ func UpdateTanggalKunjunganGaransi(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Tanggal kunjungan tidak valid."})
 	}
 
-	var garansi models.Garansi
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&garansi).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
+	var month models.GaransiMonth
+	if err := config.DB.Where("id = ?", monthID).First(&month).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Bulan Garansi tidak ditemukan."})
 	}
 
-	var month models.GaransiMonth
-	if err := config.DB.Where("id = ? AND garansi_id = ?", monthID, garansi.ID).First(&month).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Bulan Garansi tidak ditemukan."})
+	var garansi models.Garansi
+	if err := config.DB.Where("id = ? AND tracking_penawaran_id = ?", month.GaransiID, trackingID).First(&garansi).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
 	}
 
 	// Tanggal kunjungan cuma bisa diubah selama daily bulan ini masih berjalan —
@@ -296,7 +338,7 @@ func UpdateTanggalKunjunganGaransi(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengupdate tanggal kunjungan."})
 	}
 
-	updated, _ := preloadGaransi(trackingID)
+	updated, _ := preloadGaransiList(trackingID)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Tanggal kunjungan berhasil diperbarui.",
