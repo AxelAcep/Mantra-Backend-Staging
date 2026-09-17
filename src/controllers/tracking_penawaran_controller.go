@@ -343,6 +343,35 @@ func AssignPreSales(c echo.Context) error {
 		if err := config.DB.Create(&boq).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat BoQ."})
 		}
+	} else if existingBoQ.PembuatID == nil || *existingBoQ.PembuatID != body.PreSalesID {
+		// BoQ udah ada (PreSales diganti, bukan assign pertama kali) -> alihkan
+		// tanggung jawab daily BoQ yang sama ke PreSales baru, bukan bikin
+		// daily/BoQ baru.
+		oldNama := "PreSales sebelumnya"
+		if existingBoQ.PembuatID != nil {
+			var oldPegawai models.Pegawai
+			if err := config.DB.Where("id = ?", *existingBoQ.PembuatID).First(&oldPegawai).Error; err == nil {
+				oldNama = oldPegawai.Nama
+			}
+		}
+
+		if existingBoQ.ActivityID != nil && *existingBoQ.ActivityID != "" {
+			config.DB.Model(&models.Activity{}).
+				Where("id = ?", *existingBoQ.ActivityID).
+				Update("pegawai_id", body.PreSalesID)
+		}
+
+		existingBoQ.PembuatID = &body.PreSalesID
+		existingBoQ.LogAktivitas = append(existingBoQ.LogAktivitas, models.LogBoq{
+			Aksi:        "Ganti PreSales",
+			Keterangan:  "PreSales diubah dari " + oldNama + " ke " + pegawai.Nama + ". Daily BoQ yang sama dialihkan tanggung jawabnya.",
+			PegawaiID:   pegawaiID,
+			NamaPegawai: namaPegawai,
+			CreatedAt:   time.Now(),
+		})
+		if err := config.DB.Save(&existingBoQ).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengalihkan BoQ ke PreSales baru."})
+		}
 	}
 
 	// ============ AKHIR LOGIC BARU ============
@@ -1666,7 +1695,24 @@ func AssignMarketing(c echo.Context) error {
 	// Append log ke permintaan masuk
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&permintaanMasuk).Error; err == nil {
-		appendLog(&permintaanMasuk, "Assign PIC Request", pegawai.Nama, pegawaiID, namaPegawai)
+		keterangan := "Assign PIC Request"
+
+		// Kalau daily "Permintaan Masuk" udah ada, alihkan tanggung jawabnya
+		// ke Marketing/Sales yang baru (bukan biarin nyantol ke orang lama).
+		if permintaanMasuk.ActivityID != nil && *permintaanMasuk.ActivityID != "" {
+			var activity models.Activity
+			if err := config.DB.Where("id = ?", *permintaanMasuk.ActivityID).First(&activity).Error; err == nil {
+				if activity.PegawaiID != body.MarketingID {
+					if err := config.DB.Model(&models.Activity{}).
+						Where("id = ?", activity.ID).
+						Update("pegawai_id", body.MarketingID).Error; err == nil {
+						keterangan = "Ganti PIC Request: daily Permintaan Masuk dialihkan ke " + pegawai.Nama
+					}
+				}
+			}
+		}
+
+		appendLog(&permintaanMasuk, keterangan, pegawai.Nama, pegawaiID, namaPegawai)
 		config.DB.Save(&permintaanMasuk)
 	}
 

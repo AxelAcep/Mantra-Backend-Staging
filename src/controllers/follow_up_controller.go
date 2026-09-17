@@ -52,7 +52,7 @@ func preloadFollowUp(trackingID string) (models.FollowUp, error) {
 func GetDetailFollowUp(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
+	pegawaiID, _, roleStr, divisiStr, ok := getFollowUpClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -60,68 +60,16 @@ func GetDetailFollowUp(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
 	}
 
+	// Catatan: dulu ada fallback yang auto-bikin FollowUp + daily Admin
+	// Sekretariat di sini kalau belum ketemu ("kompatibilitas data lama").
+	// Ini GET handler dan gak boleh punya side effect nulis DB — kalau
+	// dipanggil dobel (retry, dua tab, dsb) sebelum baris pertama commit,
+	// dua-duanya lolos pengecekan "belum ada" dan masing-masing bikin daily
+	// Admin Sekretariat sendiri -> duplikat. FollowUp sekarang selalu dibuat
+	// di alur normal (UpdateStatusPersetujuanManajemen, case SELESAI) sebelum
+	// step_saat_ini pindah ke StepFollowUp, jadi fallback ini gak perlu lagi.
 	followUp, err := preloadFollowUp(trackingID)
 	if err != nil {
-		// Auto-initialize FollowUp for compatibility with older records
-		var tracking models.TrackingPenawaran
-		if errDb := config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID).Error; errDb == nil {
-			var adminPegawai models.Pegawai
-			var adminID string
-			var adminNama string
-			if errAdmin := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; errAdmin == nil {
-				adminID = adminPegawai.ID
-				adminNama = adminPegawai.Nama
-			} else {
-				adminID = pegawaiID
-				adminNama = namaPegawai
-			}
-
-			activityID := generateActivityID()
-			perusahaanNama := ""
-			if tracking.Perusahaan.Nama != "" {
-				perusahaanNama = tracking.Perusahaan.Nama
-			}
-			dailyAdmin := models.Activity{
-				ID:            activityID,
-				PegawaiID:     adminID,
-				TerkaitPO:     &tracking.NomorPenawaran,
-				Perusahaan:    &perusahaanNama,
-				Kategori:      models.KategoriQuotation,
-				Judul:         "Kirim Dokumen Penawaran Lengkap - " + perusahaanNama,
-				Deskripsi:     "Mengirimkan dokumen penawaran lengkap via email ke klien. Kontak: " + tracking.CustomerName + " (" + tracking.CustomerEmail + " / " + tracking.CustomerPhone + ")",
-				WaktuMulai:    time.Now(),
-				TargetSelesai: time.Now().Add(24 * time.Hour), // Deadline 1 hari
-				Status:        models.StatusOnProgress,
-			}
-			if errAct := config.DB.Create(&dailyAdmin).Error; errAct == nil {
-				newFollowUp := models.FollowUp{
-					ID:                  uuid.New().String(),
-					TrackingPenawaranID: trackingID,
-					AdminID:             &adminID,
-					ActivityAdminID:     &activityID,
-					SalesID:             &tracking.MarketingID,
-					ActivitySalesID:     nil,
-					ActivityAdminProyekID: &activityID,
-					Status:              models.StatusOnProgress,
-					Stage:               1,
-					LogAktivitas: []models.LogFollowUp{
-						{
-							Aksi:        "Follow Up Dimulai",
-							Keterangan:  "Inisialisasi otomatis proses follow up (Data lama/Fallback). Tugas kirim penawaran ditugaskan ke Admin: " + adminNama,
-							PegawaiID:   pegawaiID,
-							NamaPegawai: namaPegawai,
-							CreatedAt:   time.Now(),
-						},
-					},
-					CreatedAt: time.Now(),
-					UpdatedAt: time.Now(),
-				}
-				if errCreate := config.DB.Create(&newFollowUp).Error; errCreate == nil {
-					followUp, _ = preloadFollowUp(trackingID)
-					return c.JSON(http.StatusOK, followUp)
-				}
-			}
-		}
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
 	}
 
@@ -464,13 +412,20 @@ func InputBASTFollowup(c echo.Context) error {
 		})
 	}
 
-	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
-	isMaster := roleStr == "MASTER"
-	isAdminProyek := followUp.AdminID != nil && *followUp.AdminID == pegawaiID
+	if followUp.ActivityAdminProyekID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Admin Proyek belum ditugaskan. Tugaskan Admin Proyek dulu sebelum input Total BAST.",
+		})
+	}
 
-	if !isManagerOps && !isMaster && !isAdminProyek {
+	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
+	isDirekturKomisaris := divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
+	isMaster := roleStr == "MASTER"
+	isAdminProyek := isAssignedAdminProyek(pegawaiID, trackingID)
+
+	if !isManagerOps && !isDirekturKomisaris && !isMaster && !isAdminProyek {
 		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "Hanya Admin Proyek, Manager Operasional, atau Master yang bisa menginput Total BAST.",
+			"error": "Hanya Admin Proyek, Manager Operasional, Direktur, Komisaris, atau Master yang bisa menginput Total BAST.",
 		})
 	}
 
@@ -608,10 +563,36 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	kategori := c.FormValue("kategori")
 
 	if kategori == "DOKUMEN_PO_PGA" || kategori == "DOKUMEN_PO_FINANCE" {
-		if divisiStr != "MAINTENANCE_PAC" && divisiStr != "MAINTENANCE_FIRE" && roleStr != "MASTER" && divisiStr != "MANAGER_OPERASIONAL" && divisiStr != "MONITORING_CONTROL_ADVISOR" {
+		isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
+		isDirekturKomisaris := divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
+		isMaster := roleStr == "MASTER"
+		isAdminProyek := isAssignedAdminProyek(pegawaiID, trackingID)
+
+		if !isManagerOps && !isDirekturKomisaris && !isMaster && !isAdminProyek {
 			os.Remove(destPath)
 			return c.JSON(http.StatusForbidden, map[string]string{
-				"message": "Anda tidak memiliki izin untuk mengunggah dokumen PO Khusus.",
+				"message": "Hanya Admin Proyek, Manager Operasional, Direktur, Komisaris, atau Master yang bisa mengunggah dokumen PO.",
+			})
+		}
+
+		if followUp.ActivityAdminProyekID == nil {
+			os.Remove(destPath)
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"message": "Admin Proyek belum ditugaskan. Tugaskan Admin Proyek dan input Total BAST dulu sebelum upload dokumen PO.",
+			})
+		}
+
+		var tracking models.TrackingPenawaran
+		config.DB.Where("id = ?", trackingID).First(&tracking)
+		dualKategori := len(models.DetectBastKategori(tracking.JenisPenawaran)) == 2
+		bastFilled := followUp.TotalBAST != nil
+		if dualKategori {
+			bastFilled = followUp.TotalBastPAC != nil && followUp.TotalBastFire != nil
+		}
+		if !bastFilled {
+			os.Remove(destPath)
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"message": "Total BAST belum diisi. Input Total BAST dulu sebelum upload dokumen PO.",
 			})
 		}
 	}
@@ -857,6 +838,20 @@ func GetPegawaiSupervisiMaintenance(c echo.Context) error {
 // 2. Assign Admin Proyek
 // ============================================
 func AssignAdminProyek(c echo.Context) error {
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	isBerwenang := roleStr == "MASTER" ||
+		divisiStr == "MANAGER_OPERASIONAL" ||
+		divisiStr == "DIREKTUR" ||
+		divisiStr == "KOMISARIS"
+	if !isBerwenang {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Manager Operasional, Direktur, Komisaris, atau Master yang bisa menugaskan Admin Proyek.",
+		})
+	}
+
 	var body struct {
 		FollowUpID string `json:"followUpId"`
 		PegawaiID  string `json:"pegawaiId"`
@@ -882,6 +877,25 @@ func AssignAdminProyek(c echo.Context) error {
 		})
 	}
 
+	// Admin Proyek gak boleh ditugaskan (dan daily-nya gak boleh ke-create)
+	// sebelum daily Sales (ActivitySalesID) selesai/DITERIMA. Sebelumnya gak
+	// ada guard sama sekali di sini, jadi endpoint ini bisa dipanggil kapan
+	// pun termasuk sebelum Sales kelar.
+	if followUp.ActivitySalesID == nil || *followUp.ActivitySalesID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Admin Proyek belum bisa ditugaskan, daily Sales belum ada/belum berjalan.",
+		})
+	}
+	var activitySales models.Activity
+	if err := config.DB.Where("id = ?", *followUp.ActivitySalesID).First(&activitySales).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Daily Sales tidak ditemukan."})
+	}
+	if activitySales.Status != models.StatusDiterima {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Admin Proyek belum bisa ditugaskan, daily Sales harus selesai (disetujui) dulu.",
+		})
+	}
+
 	var pegawai models.Pegawai
 	if err := config.DB.Where("id = ?", body.PegawaiID).First(&pegawai).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
@@ -898,6 +912,58 @@ func AssignAdminProyek(c echo.Context) error {
 	tx := config.DB.Begin()
 	if tx.Error != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal memulai transaksi."})
+	}
+
+	// Kalau Admin Proyek udah pernah ditugaskan sebelumnya, ganti Admin Proyek
+	// = alihkan daily yang SAMA ke PIC baru (bukan bikin daily baru numpuk).
+	if followUp.ActivityAdminProyekID != nil && *followUp.ActivityAdminProyekID != "" {
+		var existingActivity models.Activity
+		if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&existingActivity).Error; err != nil {
+			tx.Rollback()
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Daily Admin Proyek sebelumnya tidak ditemukan."})
+		}
+
+		oldNama := existingActivity.PegawaiID
+		var oldPegawai models.Pegawai
+		if err := tx.Where("id = ?", existingActivity.PegawaiID).First(&oldPegawai).Error; err == nil {
+			oldNama = oldPegawai.Nama
+		}
+
+		if err := tx.Model(&models.Activity{}).
+			Where("id = ?", existingActivity.ID).
+			Update("pegawai_id", body.PegawaiID).Error; err != nil {
+			tx.Rollback()
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengalihkan daily Admin Proyek."})
+		}
+
+		logFollowUp := models.LogFollowUp{
+			Aksi:        "Ubah Admin Proyek",
+			Keterangan:  "Admin Proyek diubah dari " + oldNama + " ke " + pegawai.Nama + " oleh " + namaPegawai + ". Daily Admin Proyek yang sama dialihkan tanggung jawabnya, bukan dibuat baru.",
+			PegawaiID:   pegawaiID,
+			NamaPegawai: namaPegawai,
+			CreatedAt:   time.Now(),
+		}
+		followUp.LogAktivitas = append(followUp.LogAktivitas, logFollowUp)
+
+		if err := tx.Model(&models.FollowUp{}).
+			Where("id = ?", body.FollowUpID).
+			Select("log_aktivitas").
+			Updates(models.FollowUp{LogAktivitas: followUp.LogAktivitas}).Error; err != nil {
+			tx.Rollback()
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update Follow Up."})
+		}
+
+		if err := tx.Commit().Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal commit transaksi."})
+		}
+
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"message": "Admin Proyek berhasil dialihkan.",
+			"data": map[string]interface{}{
+				"activityId": existingActivity.ID,
+				"followUpId": followUp.ID,
+			},
+		})
 	}
 
 	activity := models.Activity{
@@ -917,9 +983,27 @@ func AssignAdminProyek(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Daily Activity."})
 	}
 
+	logFollowUp := models.LogFollowUp{
+		Aksi:        "Assign Admin Proyek",
+		Keterangan:  "Admin Proyek ditugaskan ke " + pegawai.Nama + " oleh " + namaPegawai + ". Admin Proyek (atau Manager Operasional/Direktur/Komisaris) sekarang bisa input Total BAST, lalu upload Dokumen PO.",
+		PegawaiID:   pegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   time.Now(),
+	}
+	followUp.LogAktivitas = append(followUp.LogAktivitas, logFollowUp)
+
+	// Select+Updates pakai STRUCT (bukan map) supaya serializer:json di
+	// log_aktivitas ke-apply — Updates(map[string]interface{}{...}) ngirim
+	// slice mentah ke driver Postgres dan meledak "could not determine data
+	// type of parameter" (root cause error "Gagal update Follow Up." kamu).
 	if err := tx.Model(&models.FollowUp{}).
 		Where("id = ?", body.FollowUpID).
-		Update("activity_admin_proyek_id", activity.ID).Error; err != nil {
+		Select("activity_admin_proyek_id", "stage", "log_aktivitas").
+		Updates(models.FollowUp{
+			ActivityAdminProyekID: &activity.ID,
+			Stage:                 3,
+			LogAktivitas:          followUp.LogAktivitas,
+		}).Error; err != nil {
 		tx.Rollback()
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update Follow Up."})
 	}

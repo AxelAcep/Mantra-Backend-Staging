@@ -1020,44 +1020,17 @@ func KonfirmasiSelesai(c echo.Context) error {
 			if errFindSales == nil && followUp.Status == models.StatusDibatalkan {
 				fmt.Printf("DEBUG: FollowUp %s sudah DIBATALKAN, skip cascade Stage 2->3\n", followUp.ID)
 			} else if errFindSales == nil {
+				// PO diterima Sales -> BUKAN auto-assign Admin Proyek. Manager
+				// Operasional/Direktur/Komisaris harus milih Admin Proyek secara
+				// manual dulu lewat AssignAdminProyek (yang baru nge-bump Stage
+				// ke 3 setelah assignment beneran kejadi). Sebelumnya di sini
+				// auto-pick pegawai MAINTENANCE_PAC pertama & langsung Stage=3
+				// tanpa ada yang milih -> BAST/upload PO ke-unlock padahal Admin
+				// Proyek-nya belum ditentukan siapa.
 				if followUp.Stage == 2 {
-					var adminProyek models.Pegawai
-					adminProyekNama := "Admin Proyek"
-					
-					// Find an Admin Proyek (for now, use MAINTENANCE_PAC)
-					errFindAdmin := tx.Where("divisi = ?", models.DivisiMaintenancePAC).First(&adminProyek).Error
-					if errFindAdmin == nil {
-						adminProyekNama = adminProyek.Nama
-					}
-
-					activityAdminProyekID := generateActivityID()
-					perusahaanNama := followUp.TrackingPenawaran.Perusahaan.Nama
-
-					dailyAdminProyek := models.Activity{
-						ID:            activityAdminProyekID,
-						PegawaiID:     adminProyek.ID,
-						TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
-						Perusahaan:    &perusahaanNama,
-						Kategori:      models.KategoriQuotation,
-						Judul:         "Upload Dokumen PO - " + perusahaanNama,
-						Deskripsi:     "Mengupload Dokumen PO untuk Admin PGA dan Finance terkait penawaran #" + followUp.TrackingPenawaran.NomorPenawaran,
-						WaktuMulai:    time.Now(),
-						TargetSelesai: time.Now().Add(24 * time.Hour), // Deadline 1 hari
-						Status:        models.StatusOnProgress,
-					}
-					
-					errCreateAdminProyek := tx.Create(&dailyAdminProyek).Error
-					if errCreateAdminProyek != nil {
-						return fmt.Errorf("gagal membuat daily activity admin proyek: %v", errCreateAdminProyek)
-					}
-
-					followUp.Stage = 3
-					followUp.Status = models.StatusOnProgress
-					followUp.ActivityAdminProyekID = &activityAdminProyekID
-					
 					logFollowUp := models.LogFollowUp{
-						Aksi:        "PO Diterima & Persiapan Dokumen",
-						Keterangan:  "Sales telah menerima PO. Dilanjutkan ke Admin Proyek (" + adminProyekNama + ") untuk mengupload Dokumen PO PGA & Finance.",
+						Aksi:        "Feedback Customer Diterima",
+						Keterangan:  "Sales telah menerima feedback/PO dari klien. Menunggu Manager Operasional/Direktur/Komisaris menugaskan Admin Proyek.",
 						PegawaiID:   activity.PegawaiID,
 						NamaPegawai: "System/Master",
 						CreatedAt:   time.Now(),
