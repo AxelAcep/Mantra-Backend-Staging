@@ -31,6 +31,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.DELETE("/permintaan-masuk/:id/dokumen/:dokumenId", controllers.DeletePenawaranDokumen, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// ── 5. DYNAMIC NESTED ROUTES (Prioritaskan di atas /:id) ──────────────────
+	g.GET("/by-nomor", controllers.GetTrackingPenawaranByNomor, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	// Chat Dynamic
 	g.GET("/:id/chat", controllers.GetPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/:id/chat", controllers.KirimPenawaranChat, middleware.VerifyToken, middleware.AuthorizeRole(3))

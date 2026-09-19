@@ -226,6 +226,22 @@ err := config.DB.
 	return c.JSON(http.StatusOK, tracking)
 }
 
+// GET /tracking-penawaran/by-nomor?nomorPenawaran=xxx
+func GetTrackingPenawaranByNomor(c echo.Context) error {
+	nomor := c.QueryParam("nomorPenawaran")
+
+	var tracking models.TrackingPenawaran
+	err := config.DB.Where("nomor_penawaran = ?", nomor).First(&tracking).Error
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Tracking penawaran tidak ditemukan"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"id":             tracking.ID,
+		"nomorPenawaran": tracking.NomorPenawaran,
+	})
+}
+
 // PATCH /tracking-penawaran/:id/presales
 func AssignPreSales(c echo.Context) error {
 	trackingID := c.Param("id")
