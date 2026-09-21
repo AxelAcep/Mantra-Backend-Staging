@@ -834,6 +834,8 @@ type PenawaranListItem struct {
 	BastEntriesSelesai int   `json:"bastEntriesSelesai,omitempty"`
 
 	// Tab "Garansi": periode, status tuntas, + progress "sudah berapa dari berapa" bulan kunjungan.
+	GaransiID           string     `json:"garansiId,omitempty"`
+	GaransiKategori     string     `json:"garansiKategori,omitempty"` // "PAC" / "FIRE" / "UMUM"
 	GaransiMulai        *time.Time `json:"garansiMulai,omitempty"`
 	GaransiSelesai      *time.Time `json:"garansiSelesai,omitempty"`
 	GaransiTuntas       *bool      `json:"garansiTuntas,omitempty"`
@@ -932,17 +934,22 @@ func currentStepStatus(r models.TrackingPenawaran) models.StatusActivity {
 			return r.Accounting.Status
 		}
 	case models.StepGaransi:
-		if r.Garansi != nil {
-			// StatusGaransi punya enum sendiri (beda dari StatusActivity),
-			// dipetakan ke padanan terdekat biar badge di FE tetap konsisten.
-			switch r.Garansi.Status {
-			case models.StatusGaransiBelumDikonfigurasi:
-				return models.StatusPerluTindakan
-			case models.StatusGaransiSelesai:
-				return models.StatusSelesai
-			default:
-				return models.StatusOnProgress
+		if len(r.Garansis) > 0 {
+			// Agregasi dari semua Garansi: SELESAI cuma kalau SEMUA
+			// udah SELESAI atau TIDAK_ADA; PERLU_TINDAKAN kalau ada
+			// yang BELUM_DIKONFIGURASI; sisanya ON_PROGRESS.
+			status := models.StatusSelesai
+			for _, g := range r.Garansis {
+				switch g.Status {
+				case models.StatusGaransiBelumDikonfigurasi:
+					return models.StatusPerluTindakan
+				case models.StatusGaransiSelesai:
+					// keep checking others
+				default:
+					status = models.StatusOnProgress
+				}
 			}
+			return status
 		}
 	}
 	// Fallback kalau entity step-nya belum ke-preload / belum ada: pakai
@@ -1027,7 +1034,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		Preload("FollowUp").
 		Preload("Implementasi").
 		Preload("Basts").
-		Preload("Garansi").
+		Preload("Garansis").
 		Preload("Accounting.Items").
 		Order(orderClause).
 		Limit(limit).
@@ -1039,7 +1046,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 
 	items := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, buildPenawaranListItem(r))
+		items = append(items, buildPenawaranListItem(r, nil))
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -1067,11 +1074,10 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
 	filterStep := c.QueryParam("step")
+	filterJenis := strings.TrimSpace(c.QueryParam("jenisPenawaran"))
 	sortBy := c.QueryParam("sortBy")
 	sortDir := c.QueryParam("sortDir")
 	_ = pegawaiID
-
-	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
 		Where(`"step_saat_ini" IN ?`, stepsAktif).
@@ -1128,11 +1134,8 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		}
 	}
 
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
-	}
-
+	// Fetch semua tracking yang match — tanpa SQL pagination karena kita
+	// expand per-garansi di Go (1 tracking bisa jadi 1-2 baris).
 	var rows []models.TrackingPenawaran
 	err := query.
 		Preload("Marketing").
@@ -1145,20 +1148,52 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		Preload("FollowUp").
 		Preload("Implementasi").
 		Preload("Basts").
-		Preload("Garansi").
+		Preload("Garansis").
 		Preload("Accounting.Items").
 		Order(orderClause).
-		Limit(limit).
-		Offset(offset).
 		Find(&rows).Error
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal mengambil data"})
 	}
 
-	items := make([]PenawaranListItem, 0, len(rows))
+	// Expand: 1 tracking → 1 baris per garansi record.
+	// Kalau tracking gak punya garansi, tetap 1 baris (garansi fields kosong).
+	allItems := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, buildPenawaranListItem(r))
+		if len(r.Garansis) > 0 {
+			for i := range r.Garansis {
+				allItems = append(allItems, buildPenawaranListItem(r, &r.Garansis[i]))
+			}
+		} else {
+			allItems = append(allItems, buildPenawaranListItem(r, nil))
+		}
 	}
+
+	// Filter by garansi kategori (PAC / FIRE / UMUM).
+	if filterJenis != "" {
+		kategoriBast := mapJenisToKategoriBast(filterJenis)
+		if kategoriBast != "" {
+			filtered := make([]PenawaranListItem, 0, len(allItems))
+			for _, item := range allItems {
+				if item.GaransiKategori == kategoriBast {
+					filtered = append(filtered, item)
+				}
+			}
+			allItems = filtered
+		}
+	}
+
+	// Paginate in Go
+	total := int64(len(allItems))
+	start := (page - 1) * limit
+	if start > len(allItems) {
+		start = len(allItems)
+	}
+	end := start + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	items := allItems[start:end]
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
 
@@ -1171,6 +1206,19 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 			TotalPages: totalPages,
 		},
 	})
+}
+
+// mapJenisToKategoriBast memetakan filter frontend ("PAC Montair" / "Generator
+// FirePro") ke KategoriBast ("PAC" / "FIRE") buat filtering per-garansi.
+func mapJenisToKategoriBast(jenis string) string {
+	lower := strings.ToLower(jenis)
+	if strings.Contains(lower, "pac") {
+		return string(models.KategoriBastPAC)
+	}
+	if strings.Contains(lower, "fire") || strings.Contains(lower, "generator") {
+		return string(models.KategoriBastFire)
+	}
+	return ""
 }
 
 // GET /tracking-penawaran/riwayat — semua TrackingPenawaran, status apapun,
@@ -1211,7 +1259,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	// soalnya SELESAI/ON_PROGRESS gak disimpan sebagai satu kolom langsung.
 	// "Semua Bast SELESAI" = ada minimal 1 Bast DAN gak ada satupun yang belum SELESAI
 	// (tracking bisa punya sampai 2 Bast, PAC & FIRE).
-	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status = ?)`
+	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status != ?)`
 	switch c.QueryParam("overallStatus") {
 	case "DIBATALKAN":
 		query = query.Where(`"TrackingPenawaran".status = ?`, models.StatusDibatalkan)
@@ -1240,7 +1288,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 		Preload("FollowUp").
 		Preload("Implementasi").
 		Preload("Basts").
-		Preload("Garansi").
+		Preload("Garansis").
 		Preload("Accounting.Items").
 		Order(`"created_at" DESC`).
 		Limit(limit).
@@ -1252,7 +1300,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 
 	items := make([]PenawaranListItem, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, buildPenawaranListItem(r))
+		items = append(items, buildPenawaranListItem(r, nil))
 	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
@@ -1271,7 +1319,9 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 // buildPenawaranListItem ngerakit satu baris list dari TrackingPenawaran yang
 // udah di-preload — dipakai bareng oleh GetTrackingPenawaranAktif &
 // GetTrackingPenawaranRiwayat biar gak duplikat.
-func buildPenawaranListItem(r models.TrackingPenawaran) PenawaranListItem {
+// Parameter garansi: kalau diisi, garansi fields diisi dari record tsb (per-garansi);
+// kalau nil, garansi fields kosong (dipakai tab selain Garansi).
+func buildPenawaranListItem(r models.TrackingPenawaran, garansi *models.Garansi) PenawaranListItem {
 	item := PenawaranListItem{
 		ID:             r.ID,
 		NomorPenawaran: r.NomorPenawaran,
@@ -1344,31 +1394,37 @@ func buildPenawaranListItem(r models.TrackingPenawaran) PenawaranListItem {
 		item.BastLengkap = &allBastLengkap
 	}
 
-	// Garansi: periode mulai/selesai, status tuntas apa belum, + progress
-	// "sudah berapa dari berapa" bulan kunjungan.
-	if r.Garansi != nil {
-		if r.Garansi.BulanMulai != nil && r.Garansi.TahunMulai != nil {
-			mulai := time.Date(*r.Garansi.TahunMulai, time.Month(*r.Garansi.BulanMulai), 1, 0, 0, 0, 0, time.Local)
+	// Garansi: dari record garansi spesifik yang di-pass (per-garansi view).
+	if garansi != nil {
+		item.GaransiID = garansi.ID
+		item.GaransiKategori = string(garansi.KategoriBast)
+		if garansi.BulanMulai != nil && garansi.TahunMulai != nil {
+			mulai := time.Date(*garansi.TahunMulai, time.Month(*garansi.BulanMulai), 1, 0, 0, 0, 0, time.Local)
 			item.GaransiMulai = &mulai
-
-			if r.Garansi.LamaTahun != nil {
-				selesai := mulai.AddDate(*r.Garansi.LamaTahun, 0, -1)
+			if garansi.LamaTahun != nil {
+				selesai := mulai.AddDate(*garansi.LamaTahun, 0, -1)
 				item.GaransiSelesai = &selesai
 			}
 		}
-		tuntas := r.Garansi.Status == models.StatusGaransiSelesai
+		tuntas := garansi.Status == models.StatusGaransiSelesai
 		item.GaransiTuntas = &tuntas
-		item.GaransiBulanTotal, item.GaransiBulanSelesai = garansiMonthsProgress(r.Garansi.ID)
+		item.GaransiBulanTotal, item.GaransiBulanSelesai = garansiMonthsProgress(garansi.ID)
 	}
 
 	// Status keseluruhan (dipakai tab Riwayat): DIBATALKAN kalau tracking-nya
 	// dibatalkan (di step Follow Up), SELESAI kalau BAST & Garansi udah
 	// sama-sama tuntas, sisanya ON_PROGRESS.
+	allGaransiSelesai := len(r.Garansis) > 0
+	for _, g := range r.Garansis {
+		if g.Status != models.StatusGaransiSelesai {
+			allGaransiSelesai = false
+			break
+		}
+	}
 	switch {
 	case r.Status == models.StatusDibatalkan:
 		item.OverallStatus = "DIBATALKAN"
-	case allBastLengkap &&
-		r.Garansi != nil && r.Garansi.Status == models.StatusGaransiSelesai:
+	case allBastLengkap && allGaransiSelesai:
 		item.OverallStatus = "SELESAI"
 	default:
 		item.OverallStatus = "ON_PROGRESS"
