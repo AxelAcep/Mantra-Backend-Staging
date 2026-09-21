@@ -58,6 +58,7 @@ func ConnectDB() {
 		&models.BastEntry{},
 		&models.Garansi{},
 		&models.GaransiMonth{},
+		&models.Barang{},
 	)
 
 	if err != nil {

@@ -51,6 +51,7 @@ func main() {
 	routes.KPIRoutes(e)
 	routes.PerusahaanRoutes(e)
 	routes.TrackingPenawaranRoutes(e)
+	routes.BarangRoutes(e)
 	routes.DashboardRoutes(e)
 	routes.AccountingDashboardRoutes(e)
 

@@ -6,4 +6,5 @@ func Register(e *echo.Echo) {
     UserRoutes(e)
     PerusahaanRoutes(e)
     TrackingPenawaranRoutes(e)
+    BarangRoutes(e)
 }
