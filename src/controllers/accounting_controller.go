@@ -43,6 +43,9 @@ func GetAccounting(c echo.Context) error {
 		Preload("Items", func(db *gorm.DB) *gorm.DB {
 			return db.Order("index ASC")
 		}).
+		Preload("Items.Activity.Pegawai").
+		Preload("Items.Activity.Dokumen").
+		Preload("Items.Activity.Dokumen.Pegawai").
 		Where("tracking_penawaran_id = ?", trackingID).
 		First(&termin).Error
 
@@ -185,7 +188,7 @@ func CreateAccounting(c echo.Context) error {
 		// Termin berjalan berurutan mirip bulan Garansi — cuma termin
 		// pertama yang langsung dapet daily, termin berikutnya nyusul
 		// otomatis (AdvanceTerminIfReady) setelah termin sebelumnya tuntas.
-		return models.CreateItemTerminActivity(tx, &termin.Items[0], pegawaiID, tracking.NomorPenawaran)
+		return models.CreateItemTerminActivity(tx, &termin.Items[0], tracking.NomorPenawaran)
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -13,10 +13,34 @@ import (
 // dibuatin daily-nya setelah termin sebelumnya tuntas — SudahDibayar DAN
 // daily-nya DITERIMA, dua-duanya wajib.
 
+// FindSupervisiFinanceAccounting nyari pegawai dengan Role SUPERVISI di
+// Divisi FINANCE_ACCOUNTING — PIC tetap buat SEMUA daily penagihan termin
+// (termin 1, 2, 3, dst), bukan siapa yang bikin/mengedit Termin. Kalau belum
+// ada yang di-assign role itu, sengaja di-block (bukan fallback diam-diam)
+// biar ketauan dan segera di-assign.
+func FindSupervisiFinanceAccounting(tx *gorm.DB) (*Pegawai, error) {
+	var pegawai Pegawai
+	err := tx.
+		Joins(`JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
+		Where(`"Pegawai".divisi = ? AND "User".role = ?`, DivisiFinanceAccounting, RoleSupervisi).
+		First(&pegawai).Error
+	if err != nil {
+		return nil, fmt.Errorf("supervisi Finance Accounting belum ada/belum di-assign — hubungi admin buat set role Supervisi di divisi Finance Accounting")
+	}
+	return &pegawai, nil
+}
+
 // CreateItemTerminActivity bikin daily Activity buat satu ItemTermin dan
 // nyimpen ActivityID-nya. Dipanggil saat Accounting dibuat (termin ke-1)
-// maupun otomatis dari AdvanceTerminIfReady (termin ke-2 dst).
-func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, picID, nomorPenawaran string) error {
+// maupun otomatis dari AdvanceTerminIfReady (termin ke-2 dst). PIC-nya
+// SELALU Supervisi Finance Accounting, dicari sendiri di sini — caller gak
+// perlu (dan gak boleh) nentuin PIC-nya.
+func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, nomorPenawaran string) error {
+	pic, err := FindSupervisiFinanceAccounting(tx)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now()
 	deadline := now.Add(7 * 24 * time.Hour)
 	if item.Deadline != nil {
@@ -25,7 +49,7 @@ func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, picID, nomorPenawar
 
 	activity := Activity{
 		ID:            uuid.New().String(),
-		PegawaiID:     picID,
+		PegawaiID:     pic.ID,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         fmt.Sprintf("Penagihan Termin %d - %s", item.Index, item.NamaTermin),
 		Deskripsi:     fmt.Sprintf("Activity otomatis penagihan termin pembayaran #%d (%s) untuk penawaran %s", item.Index, item.NamaTermin, nomorPenawaran),
@@ -83,5 +107,5 @@ func AdvanceTerminIfReady(tx *gorm.DB, item *ItemTermin) error {
 		return nil
 	}
 
-	return CreateItemTerminActivity(tx, &nextItem, termin.CreatedBy, termin.TrackingPenawaran.NomorPenawaran)
+	return CreateItemTerminActivity(tx, &nextItem, termin.TrackingPenawaran.NomorPenawaran)
 }

@@ -271,6 +271,26 @@ type FollowUp struct {
 	ActivitySales       *Activity         `gorm:"foreignKey:ActivitySalesID;references:ID"     json:"activitySales,omitempty"`
 	ActivityAdminProyekID *string         `gorm:"index"                                        json:"activityAdminProyekId,omitempty"`
 	ActivityAdminProyek *Activity         `gorm:"foreignKey:ActivityAdminProyekID;references:ID" json:"activityAdminProyek,omitempty"`
+
+	// ─── Flow "Pengecekan & Konfirmasi Dokumen PO" (Stage 3→6) ──────────────
+	// Stage 3: Sales selesai, nunggu MO milih Admin Proyek (belum ada daily).
+	// Stage 4: MO udah milih -> AdminProyekID keisi + 2 daily pengecekan
+	//          (Admin Proyek & Finance Supervisi) dibuat bareng.
+	// Stage 5: Dua-duanya daily pengecekan DITERIMA -> nunggu konfirmasi
+	//          Direktur/Komisaris (gak pake daily, mirip Persetujuan Manajemen).
+	// Stage 6: Direktur/Komisaris ACC -> baru daily "Upload Dokumen PO" buat
+	//          Admin Proyek (ActivityAdminProyekID di atas) dibuat.
+	AdminProyekID *string  `gorm:"index"                            json:"adminProyekId,omitempty"`
+	AdminProyek   *Pegawai `gorm:"foreignKey:AdminProyekID;references:ID" json:"adminProyek,omitempty"`
+
+	ActivityPengecekanAdminProyekID *string   `gorm:"index"                                                     json:"activityPengecekanAdminProyekId,omitempty"`
+	ActivityPengecekanAdminProyek   *Activity `gorm:"foreignKey:ActivityPengecekanAdminProyekID;references:ID" json:"activityPengecekanAdminProyek,omitempty"`
+
+	ActivityPengecekanFinanceID *string   `gorm:"index"                                                 json:"activityPengecekanFinanceId,omitempty"`
+	ActivityPengecekanFinance   *Activity `gorm:"foreignKey:ActivityPengecekanFinanceID;references:ID" json:"activityPengecekanFinance,omitempty"`
+
+	AccDirekturKomisarisPO bool `gorm:"not null;default:false" json:"accDirekturKomisarisPO"`
+
 	Status              StatusActivity    `gorm:"not null;default:'ON_PROGRESS'"               json:"status"`
 	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
 	TotalBAST           *int              `gorm:"index" json:"totalBast,omitempty"`

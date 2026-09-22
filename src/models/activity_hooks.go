@@ -60,7 +60,69 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		return err
 	}
 
+	// ── Activity pengecekan Dokumen PO (Admin Proyek/Finance) DITERIMA →
+	//    kalau dua-duanya udah selesai, lanjut nunggu konfirmasi Direktur ──
+	if err := handlePengecekanDokumenPODiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handlePengecekanDokumenPODiterima:", err)
+		return err
+	}
+
 	return nil
+}
+
+// ─── Activity pengecekan Dokumen PO (FollowUp Stage 4) DITERIMA ──────────────
+// Dipicu 2x (sekali per activity: Admin Proyek & Finance) — begitu DUA-DUANYA
+// DITERIMA, FollowUp maju ke Stage 5 (nunggu konfirmasi Direktur/Komisaris,
+// lihat KonfirmasiDokumenPO). Guard Stage==4 nyegah re-trigger kalau salah
+// satu daily di-update lagi setelah Stage udah maju.
+
+func handlePengecekanDokumenPODiterima(tx *gorm.DB, a *Activity) error {
+	var followUp FollowUp
+	err := tx.Where(
+		"(activity_pengecekan_admin_proyek_id = ? OR activity_pengecekan_finance_id = ?) AND stage = ?",
+		a.ID, a.ID, 4,
+	).First(&followUp).Error
+	if err != nil {
+		// Bukan activity pengecekan dokumen PO yang lagi di Stage 4, skip diam-diam.
+		return nil
+	}
+
+	if followUp.ActivityPengecekanAdminProyekID == nil || followUp.ActivityPengecekanFinanceID == nil {
+		return nil
+	}
+
+	var adminProyekAct, financeAct Activity
+	if err := tx.Where("id = ?", *followUp.ActivityPengecekanAdminProyekID).First(&adminProyekAct).Error; err != nil {
+		return nil
+	}
+	if err := tx.Where("id = ?", *followUp.ActivityPengecekanFinanceID).First(&financeAct).Error; err != nil {
+		return nil
+	}
+
+	if adminProyekAct.Status != StatusDiterima || financeAct.Status != StatusDiterima {
+		fmt.Println(">>> Pengecekan Dokumen PO belum dua-duanya selesai, skip:", followUp.ID)
+		return nil
+	}
+
+	fmt.Println(">>> Dua daily pengecekan Dokumen PO selesai, FollowUp lanjut Stage 5:", followUp.ID)
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
+		Aksi:        "Pengecekan Dokumen PO Selesai",
+		Keterangan:  "Daily pengecekan Admin Proyek & Finance dua-duanya selesai. Menunggu konfirmasi Direktur/Komisaris.",
+		PegawaiID:   a.PegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   time.Now(),
+	})
+
+	return tx.Model(&FollowUp{}).Where("id = ?", followUp.ID).
+		Select("stage", "log_aktivitas").
+		Updates(FollowUp{Stage: 5, LogAktivitas: followUp.LogAktivitas}).Error
 }
 
 // ─── Quotation → Review Internal (existing logic, dipisah biar rapi) ──────────
