@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"time"
@@ -332,6 +333,27 @@ func BayarItemTermin(c echo.Context) error {
 				TanggalDibayar: item.TanggalDibayar,
 			}).Error; err != nil {
 			return err
+		}
+
+		// Resume pengantaran yang di-hold: jika ini termin 1 dan kondisi
+		// SESUDAH_DP, buat activity pengantaran yang tertunda.
+		if item.Index == 1 {
+			var termin models.TerminPembayaran
+			if errTermin := tx.Where("id = ?", item.TerminPembayaranID).First(&termin).Error; errTermin == nil {
+				var followUp models.FollowUp
+				if errFU := tx.Where("tracking_penawaran_id = ?", termin.TrackingPenawaranID).First(&followUp).Error; errFU == nil {
+					if followUp.KondisiPengantaran != nil && *followUp.KondisiPengantaran == "SESUDAH_DP" {
+						var impl models.Implementasi
+						if errImpl := tx.Where("tracking_penawaran_id = ?", termin.TrackingPenawaranID).First(&impl).Error; errImpl == nil {
+							if impl.ActivityPembelianID != nil && (impl.ActivityPengantaranID == nil || *impl.ActivityPengantaranID == "") {
+								if errResume := models.ResumePengantaranHold(tx, &impl, &followUp); errResume != nil {
+									fmt.Println(">>> Gagal resume pengantaran hold:", errResume)
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 
 		return models.AdvanceTerminIfReady(tx, &item)

@@ -9,6 +9,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 
 	"mantra/src/config"
 	"mantra/src/models"
@@ -523,6 +524,35 @@ func AssignPGAStaff(c echo.Context) error {
 
 	if parentID == nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Activity %s belum dibuat.", activityName)})
+	}
+
+	// Hold pengantaran jika kondisi SESUDAH_DP dan termin 1 belum lunas
+	if req.Phase == "pengantaran" {
+		var followUp models.FollowUp
+		if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&followUp).Error; err == nil {
+			if followUp.KondisiPengantaran != nil && *followUp.KondisiPengantaran == "SESUDAH_DP" {
+				var termin models.TerminPembayaran
+				if errTermin := config.DB.
+					Preload("Items", func(db *gorm.DB) *gorm.DB {
+						return db.Order("index ASC")
+					}).
+					Where("tracking_penawaran_id = ?", trackingID).
+					First(&termin).Error; errTermin == nil {
+					termin1Paid := false
+					for _, item := range termin.Items {
+						if item.Index == 1 && item.SudahDibayar {
+							termin1Paid = true
+							break
+						}
+					}
+					if !termin1Paid {
+						return c.JSON(http.StatusBadRequest, map[string]string{
+							"error": "Pengantaran ditahan — kondisi pengantaran sesudah DP, termin 1 belum lunas di Accounting.",
+						})
+					}
+				}
+			}
+		}
 	}
 
 	var targetSelesai time.Time

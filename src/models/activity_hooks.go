@@ -161,6 +161,26 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
+	// Hold pengantaran jika kondisi SESUDAH_DP dan termin 1 belum lunas.
+	// Pengantaran baru dibuat otomatis setelah termin 1 ditandai lunas
+	// (lihat resume di handleItemTerminDiterima / BayarItemTermin).
+	if followUp.KondisiPengantaran != nil && *followUp.KondisiPengantaran == "SESUDAH_DP" {
+		var termin TerminPembayaran
+		if errTermin := tx.
+			Where("tracking_penawaran_id = ?", impl.TrackingPenawaranID).
+			First(&termin).Error; errTermin == nil {
+			var itemTermin1 ItemTermin
+			if errItem := tx.
+				Where("termin_pembayaran_id = ? AND index = ?", termin.ID, 1).
+				First(&itemTermin1).Error; errItem == nil {
+				if !itemTermin1.SudahDibayar {
+					fmt.Println(">>> Pengantaran di-HOLD: kondisi SESUDAH_DP, termin 1 belum lunas. Menunggu pembayaran DP.")
+					return nil
+				}
+			}
+		}
+	}
+
 	var adminProyekActivity Activity
 	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
 		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip:", err)
@@ -669,4 +689,64 @@ func handleItemTerminDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	return AdvanceTerminIfReady(tx, &item)
+}
+
+// ─── Resume Pengantaran Hold ───────────────────────────────────────────────
+// Dipanggil saat termin 1 lunas (SudahDibayar) dan kondisi SESUDAH_DP.
+// Membuat ActivityPengantaran yang sebelumnya di-hold karena pembayaran DP
+// belum diterima. Logic pembuatan activity sama dengan handlePembelianBarangDiterima.
+
+func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) error {
+	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+		fmt.Println(">>> ResumePengantaranHold: FollowUp belum punya Admin Proyek, skip")
+		return nil
+	}
+
+	var adminProyekActivity Activity
+	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+		fmt.Println(">>> ResumePengantaranHold: Activity Admin Proyek tidak ditemukan, skip:", err)
+		return nil
+	}
+
+	now := time.Now()
+	pengantaranActivity := Activity{
+		ID:            uuid.New().String(),
+		PegawaiID:     adminProyekActivity.PegawaiID,
+		Kategori:      KategoriAkomodasiProject,
+		Judul:         "Pengantaran Barang Implementasi",
+		Deskripsi:     "Activity pengantaran barang (dilanjutkan setelah termin 1 DP lunas)",
+		WaktuMulai:    now,
+		TargetSelesai: now.Add(48 * time.Hour),
+		Status:        StatusOnProgress,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := tx.Create(&pengantaranActivity).Error; err != nil {
+		fmt.Println(">>> ResumePengantaranHold: Gagal membuat Activity Pengantaran:", err)
+		return err
+	}
+
+	fmt.Println(">>> ResumePengantaranHold: Activity Pengantaran dibuat:", pengantaranActivity.ID)
+
+	impl.LogAktivitas = append(impl.LogAktivitas, LogImplementasi{
+		Aksi:        "Buat Activity Pengantaran (Resume)",
+		Keterangan:  fmt.Sprintf("Activity pengantaran dilanjutkan setelah termin 1 DP lunas, deadline 2 hari, PIC: %s", adminProyekActivity.Pegawai.Nama),
+		PegawaiID:   adminProyekActivity.PegawaiID,
+		NamaPegawai: adminProyekActivity.Pegawai.Nama,
+		CreatedAt:   now,
+	})
+
+	if err := tx.Model(&Implementasi{}).
+		Where("id = ?", impl.ID).
+		Select("activity_pengantaran_id", "log_aktivitas").
+		Updates(Implementasi{
+			ActivityPengantaranID: &pengantaranActivity.ID,
+			LogAktivitas:          impl.LogAktivitas,
+		}).Error; err != nil {
+		fmt.Println(">>> ResumePengantaranHold: Gagal update Implementasi.ActivityPengantaranID:", err)
+		return err
+	}
+
+	return nil
 }
