@@ -33,7 +33,7 @@ func getStepAccessClaims(c echo.Context) (pegawaiID, roleStr, divisiStr string, 
 
 var stepAllowedDivisi = map[models.StepPenawaran][]string{
 	models.StepPermintaanMasuk:      {"SALES", "ADMIN_SEKERTARIS", "PRESALES"},
-	models.StepPenyusunanBoQ:        {"SALES", "ADMIN_SEKERTARIS", "PRESALES"},
+	models.StepPenyusunanBoQ:        {"SALES", "ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT", "PRESALES"},
 	models.StepReviewInternal:       {"ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT"},
 	models.StepPersetujuanManajemen: {"ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT"},
 	models.StepFollowUp:             {"SALES", "ADMIN_SEKERTARIAT", "FINANCE_ACCOUNTING"},
