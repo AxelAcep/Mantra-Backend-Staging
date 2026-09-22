@@ -695,15 +695,30 @@ func KonfirmasiReschedule(c echo.Context) error {
 			activity.Status = models.StatusOnProgress
 			activity.IsSupervised = false
 
-			// update parent jika ada
+			// Update parent jika ada — TAPI cuma kalau parent-nya masih aktif
+			// (ON_PROGRESS/PENDING/dll). Parent adalah activity yang benar-benar
+			// terpisah (dimiliki pegawai lain), jadi reschedule si child gak
+			// boleh nimpa parent yang udah DITERIMA/SELESAI/DIBATALKAN — dulu di
+			// sini gak ada pengecekan sama sekali, jadi parent yang udah selesai
+			// ikut ke-reset balik ke ON_PROGRESS + tanggalnya ikut geser.
 			if activity.ParentID != nil {
-				if err := tx.Model(&models.Activity{}).
-					Where("id = ?", *activity.ParentID).
-					Updates(map[string]interface{}{
-						"target_selesai": reschedule.TargetSelesaiBaru,
-						"status":         models.StatusOnProgress,
-					}).Error; err != nil {
+				var parent models.Activity
+				if err := tx.Where("id = ?", *activity.ParentID).First(&parent).Error; err != nil {
 					return err
+				}
+				if parent.Status != models.StatusDiterima &&
+					parent.Status != models.StatusSelesai &&
+					parent.Status != models.StatusDibatalkan {
+					if err := tx.Model(&models.Activity{}).
+						Where("id = ?", *activity.ParentID).
+						Updates(map[string]interface{}{
+							"target_selesai": reschedule.TargetSelesaiBaru,
+							"status":         models.StatusOnProgress,
+						}).Error; err != nil {
+						return err
+					}
+				} else {
+					fmt.Println(">>> Parent activity sudah selesai/dibatalkan, skip cascade reschedule:", parent.ID)
 				}
 			}
 
