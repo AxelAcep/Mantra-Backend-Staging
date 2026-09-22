@@ -298,6 +298,9 @@ type FollowUp struct {
 	// kalau cuma 1 kategori atau gak ada dua-duanya, tetap pakai TotalBAST di atas.
 	TotalBastPAC        *int              `gorm:"index" json:"totalBastPAC,omitempty"`
 	TotalBastFire       *int              `gorm:"index" json:"totalBastFire,omitempty"`
+	// Kondisi pengantaran barang: "SEBELUM_DP" atau "SESUDAH_DP".
+	// Jika SESUDAH_DP, pengantaran ditahan sampai termin 1 lunas di Accounting.
+	KondisiPengantaran  *string           `gorm:"size:20;default:null" json:"kondisiPengantaran,omitempty"`
 	LogAktivitas        []LogFollowUp     `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Dokumen             []PenawaranDokumen `gorm:"foreignKey:FollowUpID"                       json:"dokumen,omitempty"`
 	CreatedAt           time.Time         `gorm:"index"                                        json:"createdAt"`

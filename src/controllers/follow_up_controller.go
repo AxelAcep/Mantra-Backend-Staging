@@ -470,6 +470,89 @@ func InputBASTFollowup(c echo.Context) error {
 	})
 }
 
+// ── Set Kondisi Pengantaran ────────────────────────────────────────────────
+
+func SetKondisiPengantaran(c echo.Context) error {
+	trackingID := c.Param("id")
+
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getFollowUpClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+
+	var body struct {
+		KondisiPengantaran string `json:"kondisiPengantaran"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
+
+	if body.KondisiPengantaran != "SEBELUM_DP" && body.KondisiPengantaran != "SESUDAH_DP" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "kondisiPengantaran harus 'SEBELUM_DP' atau 'SESUDAH_DP'.",
+		})
+	}
+
+	var followUp models.FollowUp
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		First(&followUp).Error; err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Follow Up tidak ditemukan."})
+	}
+
+	if followUp.Status == models.StatusDibatalkan {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Permintaan penawaran ini sudah dibatalkan, tidak bisa diproses lagi.",
+		})
+	}
+
+	if followUp.ActivityAdminProyekID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Admin Proyek belum ditugaskan. Tugaskan Admin Proyek dulu.",
+		})
+	}
+
+	isManagerOps := divisiStr == "MANAGER_OPERASIONAL"
+	isDirekturKomisaris := divisiStr == "DIREKTUR" || divisiStr == "KOMISARIS"
+	isMaster := roleStr == "MASTER"
+	isAdminProyek := isAssignedAdminProyek(pegawaiID, trackingID)
+
+	if !isManagerOps && !isDirekturKomisaris && !isMaster && !isAdminProyek {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Admin Proyek, Manager Operasional, Direktur, Komisaris, atau Master yang bisa mengatur kondisi pengantaran.",
+		})
+	}
+
+	followUp.KondisiPengantaran = &body.KondisiPengantaran
+
+	kondisiLabel := "Diantar Sebelum DP"
+	if body.KondisiPengantaran == "SESUDAH_DP" {
+		kondisiLabel = "Diantar Setelah Klien DP"
+	}
+
+	appendFollowUpLog(
+		&followUp,
+		"Kondisi Pengantaran Diatur",
+		"Kondisi pengantaran barang diubah menjadi: "+kondisiLabel+".",
+		pegawaiID,
+		namaPegawai,
+	)
+
+	if err := config.DB.Save(&followUp).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menyimpan kondisi pengantaran."})
+	}
+
+	updated, err := preloadFollowUp(trackingID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data terbaru."})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Kondisi pengantaran berhasil diupdate.",
+		"data":    updated,
+	})
+}
+
 // ── Upload Dokumen ─────────────────────────────────────────────────────────
 
 func UploadDokumenFollowUp(c echo.Context) error {
@@ -481,7 +564,11 @@ func UploadDokumenFollowUp(c echo.Context) error {
 	}
 
 	var followUp models.FollowUp
-	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&followUp).Error; err != nil {
+	if err := config.DB.
+		Where("tracking_penawaran_id = ?", trackingID).
+		Preload("TrackingPenawaran").
+		Preload("TrackingPenawaran.Perusahaan").
+		First(&followUp).Error; err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"message": "Data Follow Up tidak ditemukan untuk penawaran ini",
 		})
@@ -689,9 +776,20 @@ func UploadDokumenFollowUp(c echo.Context) error {
 			//    create Activity Pembelian Barang untuk Supervisor PGA
 			activityPembelianID := uuid.NewString()
 
+			nomorPO := followUp.TrackingPenawaran.NomorPenawaran
+			if followUp.TrackingPenawaran.NomorPO != nil && *followUp.TrackingPenawaran.NomorPO != "" {
+				nomorPO = *followUp.TrackingPenawaran.NomorPO
+			}
+			var namaPerusahaan *string
+			if followUp.TrackingPenawaran.Perusahaan.Nama != "" {
+				namaPerusahaan = &followUp.TrackingPenawaran.Perusahaan.Nama
+			}
+
 			activityPembelian := models.Activity{
 				ID:            activityPembelianID,
 				PegawaiID:     pgaSupervisor.ID,
+				TerkaitPO:     &nomorPO,
+				Perusahaan:    namaPerusahaan,
 				Kategori:      models.KategoriAkomodasiProject,
 				Judul:         "Pembelian Barang Implementasi",
 				Deskripsi:     "Activity otomatis pembelian barang untuk tahap Implementasi",

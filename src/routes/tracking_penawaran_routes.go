@@ -67,6 +67,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.POST("/follow-up/admin-proyek", controllers.AssignAdminProyek, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/follow-up/konfirmasi-dokumen-po", controllers.KonfirmasiDokumenPO, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/follow-up/bast", controllers.InputBASTFollowup, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/follow-up/kondisi-pengantaran", controllers.SetKondisiPengantaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/follow-up/batalkan", controllers.BatalkanFollowUp, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// Accounting
