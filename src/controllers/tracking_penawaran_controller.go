@@ -824,6 +824,12 @@ type PenawaranListItem struct {
 	TotalTermin      int                     `json:"totalTermin,omitempty"`
 	TerminDibayar    int                     `json:"terminDibayar,omitempty"`
 
+	// Nomor PO dan WO — dicari dari TrackingPenawaran.NomorPO (master) dan
+	// Implementasi.NoWO.  Kedua field ini dikirim ke frontend supaya bisa
+	// ditampilin di tabel & di-search.
+	NomorPO string `json:"nomorPO,omitempty"`
+	NomorWO string `json:"nomorWO,omitempty"`
+
 	// Tab "Pengadaan Aktif": tahap Implementasi saat ini.
 	ImplementasiTahap string `json:"implementasiTahap,omitempty"` // PEMBELIAN_BARANG | PENGANTARAN | INSTALASI
 
@@ -983,8 +989,12 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	if search != "" {
 		like := "%" + search + "%"
 		query = query.Where(
-			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ?`,
-			like, like, like,
+			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ? OR "nomor_po" ILIKE ? OR EXISTS (
+				SELECT 1 FROM "Implementasi" WHERE "Implementasi".tracking_penawaran_id = "TrackingPenawaran".id AND "Implementasi".no_wo ILIKE ?
+			) OR EXISTS (
+				SELECT 1 FROM "Perusahaan" WHERE "Perusahaan".id = "TrackingPenawaran".perusahaan_id AND "Perusahaan".nama ILIKE ?
+			)`,
+			like, like, like, like, like, like,
 		)
 	}
 
@@ -1086,8 +1096,12 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	if search != "" {
 		like := "%" + search + "%"
 		query = query.Where(
-			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ?`,
-			like, like, like,
+			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ? OR "nomor_po" ILIKE ? OR EXISTS (
+				SELECT 1 FROM "Implementasi" WHERE "Implementasi".tracking_penawaran_id = "TrackingPenawaran".id AND "Implementasi".no_wo ILIKE ?
+			) OR EXISTS (
+				SELECT 1 FROM "Perusahaan" WHERE "Perusahaan".id = "TrackingPenawaran".perusahaan_id AND "Perusahaan".nama ILIKE ?
+			)`,
+			like, like, like, like, like, like,
 		)
 	}
 
@@ -1244,8 +1258,12 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	if search != "" {
 		like := "%" + search + "%"
 		query = query.Where(
-			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ?`,
-			like, like, like,
+			`"nomor_penawaran" ILIKE ? OR "customer_name" ILIKE ? OR "lokasi_proyek" ILIKE ? OR "nomor_po" ILIKE ? OR EXISTS (
+				SELECT 1 FROM "Implementasi" WHERE "Implementasi".tracking_penawaran_id = "TrackingPenawaran".id AND "Implementasi".no_wo ILIKE ?
+			) OR EXISTS (
+				SELECT 1 FROM "Perusahaan" WHERE "Perusahaan".id = "TrackingPenawaran".perusahaan_id AND "Perusahaan".nama ILIKE ?
+			)`,
+			like, like, like, like, like, like,
 		)
 	}
 
@@ -1336,6 +1354,17 @@ func buildPenawaranListItem(r models.TrackingPenawaran, garansi *models.Garansi)
 	item.PICReq = &PegawaiSummary{
 		ID:   r.Marketing.ID,
 		Nama: r.Marketing.Nama,
+	}
+
+	// Nomor PO dari TrackingPenawaran (master), fallback ke Implementasi.NoPO
+	if r.NomorPO != nil {
+		item.NomorPO = *r.NomorPO
+	}
+	if r.Implementasi != nil {
+		item.NomorWO = r.Implementasi.NoWO
+		if item.NomorPO == "" {
+			item.NomorPO = r.Implementasi.NoPO
+		}
 	}
 
 	if r.PermintaanMasuk != nil && r.PermintaanMasuk.PreSales != nil {
