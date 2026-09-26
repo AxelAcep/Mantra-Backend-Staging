@@ -44,7 +44,24 @@ func appendBoQLog(boq *models.PenyusunanBoQ, aksi, keterangan, pegawaiID, namaPe
         CreatedAt:   time.Now(),
     }
     boq.LogAktivitas = append(boq.LogAktivitas, log)
-    config.DB.Save(boq) // ← save seluruh boq biar kolom logs ter-update
+    config.DB.Save(boq)
+}
+
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 func recalcEstimasi(boq *models.PenyusunanBoQ) {
@@ -131,6 +148,15 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "BoQ tidak ditemukan."})
 	}
 
+	// Simpan nilai lama sebelum update
+	oldHarga1 := boq.Harga1
+	oldHarga2 := boq.Harga2
+	oldHarga3 := boq.Harga3
+	var oldEstimasi float64
+	if boq.EstimasiHarga != nil {
+		oldEstimasi = *boq.EstimasiHarga
+	}
+
 	if body.Harga1 != nil {
 		boq.Harga1 = body.Harga1
 	}
@@ -145,92 +171,163 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 	boq.UpdatedAt = time.Now()
 	config.DB.Save(&boq)
 
-	appendBoQLog(&boq, "Update Sub Total", fmt.Sprintf("Harga diperbarui: Total Rp %.0f", *boq.EstimasiHarga), pegawaiID, namaPegawai)
+	// Susun log dengan old → new
+	var changes []string
+	if body.Harga1 != nil && !floatPtrEqual(oldHarga1, body.Harga1) {
+		changes = append(changes, fmt.Sprintf("Sub Total I (Barang): Rp %.0f → Rp %.0f", derefFloat(oldHarga1), *body.Harga1))
+	}
+	if body.Harga2 != nil && !floatPtrEqual(oldHarga2, body.Harga2) {
+		changes = append(changes, fmt.Sprintf("Sub Total II (Instalasi): Rp %.0f → Rp %.0f", derefFloat(oldHarga2), *body.Harga2))
+	}
+	if body.Harga3 != nil && !floatPtrEqual(oldHarga3, body.Harga3) {
+		changes = append(changes, fmt.Sprintf("Sub Total III (Jasa): Rp %.0f → Rp %.0f", derefFloat(oldHarga3), *body.Harga3))
+	}
 
-	// ── Trigger ke step berikutnya ──────────────────────────────────────
-	boq.Status = models.StatusSelesai
-	appendBoQLog(&boq, "Konfirmasi Selesai Diterima", "BoQ disetujui, lanjut ke Review Internal", pegawaiID, namaPegawai)
-	config.DB.Save(&boq)
+	if len(changes) > 0 {
+		keterangan := fmt.Sprintf("Harga diperbarui (%s); Total: Rp %.0f → Rp %.0f",
+			strings.Join(changes, "; "), oldEstimasi, *boq.EstimasiHarga)
+		appendBoQLog(&boq, "Update Sub Total", keterangan, pegawaiID, namaPegawai)
+	}
 
-	config.DB.Model(&models.TrackingPenawaran{}).
-		Where("id = ?", trackingID).
-		Updates(map[string]interface{}{
-			"step_saat_ini": models.StepReviewInternal,
-			"status":        models.StatusOnProgress,
-		})
+	// ── Trigger ke step berikutnya (hanya jika BoQ belum selesai) ──────────
+	if boq.Status != models.StatusSelesai {
+		boq.Status = models.StatusSelesai
+		appendBoQLog(&boq, "Konfirmasi Selesai Diterima", "BoQ disetujui, lanjut ke Review Internal", pegawaiID, namaPegawai)
+		config.DB.Save(&boq)
 
-	// Tentukan Admin Sekertariat untuk daily
-	var adminPegawai models.Pegawai
-	if divisiStr == string(models.DivisiAdminSekertariat) {
-		// Yang update adalah Admin Sekertariat, assign ke dirinya sendiri
-		adminPegawai.ID = pegawaiID
-		adminPegawai.Nama = namaPegawai
-	} else {
-		// Bukan Admin Sekertariat, cari Admin Sekertariat pertama
-		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+		config.DB.Model(&models.TrackingPenawaran{}).
+			Where("id = ?", trackingID).
+			Updates(map[string]interface{}{
+				"step_saat_ini": models.StepReviewInternal,
+				"status":        models.StatusOnProgress,
+			})
+
+		// Tentukan Admin Sekertariat untuk daily
+		var adminPegawai models.Pegawai
+		if divisiStr == string(models.DivisiAdminSekertariat) {
+			adminPegawai.ID = pegawaiID
+			adminPegawai.Nama = namaPegawai
+		} else {
+			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+			}
+		}
+
+		// Ambil nama perusahaan untuk judul daily
+		var tracking models.TrackingPenawaran
+		config.DB.Preload("Perusahaan").Where("id = ?", trackingID).First(&tracking)
+		namaPerusahaan := tracking.Perusahaan.Nama
+
+		// Hitung deadline 2 hari dari sekarang, jam 5 sore
+		now := time.Now()
+		deadline := time.Date(now.Year(), now.Month(), now.Day()+2, 17, 0, 0, 0, now.Location())
+		if now.After(deadline) {
+			deadline = deadline.Add(24 * time.Hour)
+		}
+
+		// Buat Daily Activity untuk Admin Sekertariat
+		activityAdminID := generateActivityID()
+		dailyAdmin := models.Activity{
+			ID:            activityAdminID,
+			PegawaiID:     adminPegawai.ID,
+			TerkaitPO:     tracking.NomorPO,
+			Perusahaan:    &namaPerusahaan,
+			Kategori:      models.KategoriQuotation,
+			Judul:         "Pengecekan Penawaran " + namaPerusahaan,
+			Deskripsi:     "Activity otomatis setelah update sub total BoQ untuk penawaran #" + tracking.NomorPenawaran,
+			WaktuMulai:    time.Now(),
+			TargetSelesai: deadline,
+			Status:        models.StatusOnProgress,
+		}
+		if err := config.DB.Create(&dailyAdmin).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
+		}
+
+		// Buat atau update Review Internal
+		var existingReview models.ReviewInternal
+		reviewExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingReview).Error == nil
+
+		if !reviewExists {
+			review := models.ReviewInternal{
+				ID:                  uuid.New().String(),
+				TrackingPenawaranID: trackingID,
+				ActivityAdminID:     &activityAdminID,
+				AccAdminDirektur:    false,
+				AccManajerOps:       false,
+				Status:              models.StatusOnProgress,
+				CreatedAt:           time.Now(),
+				UpdatedAt:           time.Now(),
+			}
+			if err := config.DB.Create(&review).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Review Internal."})
+			}
+		} else {
+			existingReview.ActivityAdminID = &activityAdminID
+			config.DB.Save(&existingReview)
 		}
 	}
-
-	// Ambil nama perusahaan untuk judul daily
-	var tracking models.TrackingPenawaran
-	config.DB.Preload("Perusahaan").Where("id = ?", trackingID).First(&tracking)
-	namaPerusahaan := tracking.Perusahaan.Nama
-
-	// Hitung deadline hari ini jam 5 sore, kalau sudah lewat jadi besok
-	now := time.Now()
-	deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
-	if now.After(deadline) {
-		deadline = deadline.Add(24 * time.Hour)
-	}
-
-	// Buat Daily Activity untuk Admin Sekertariat
-	activityAdminID := generateActivityID()
-	dailyAdmin := models.Activity{
-		ID:            activityAdminID,
-		PegawaiID:     adminPegawai.ID,
-		TerkaitPO:     tracking.NomorPO,
-		Perusahaan:    &namaPerusahaan,
-		Kategori:      models.KategoriQuotation,
-		Judul:         "Pengecekan Penawaran " + namaPerusahaan,
-		Deskripsi:     "Activity otomatis setelah update sub total BoQ untuk penawaran #" + tracking.NomorPenawaran,
-		WaktuMulai:    time.Now(),
-		TargetSelesai: deadline,
-		Status:        models.StatusOnProgress,
-	}
-	if err := config.DB.Create(&dailyAdmin).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
-	}
-
-	// Buat Review Internal
-	var existingReview models.ReviewInternal
-	reviewExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingReview).Error == nil
-
-	if !reviewExists {
-		review := models.ReviewInternal{
-			ID:                  uuid.New().String(),
-			TrackingPenawaranID: trackingID,
-			ActivityAdminID:     &activityAdminID,
-			AccAdminDirektur:    false,
-			AccManajerOps:       false,
-			Status:              models.StatusOnProgress,
-			CreatedAt:           time.Now(),
-			UpdatedAt:           time.Now(),
-		}
-		if err := config.DB.Create(&review).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Review Internal."})
-		}
-	} else {
-		// Update existing review dengan activity admin
-		existingReview.ActivityAdminID = &activityAdminID
-		config.DB.Save(&existingReview)
-	}
-
-	// ── End Trigger ─────────────────────────────────────────────────────
 
 	updated, _ := preloadBoQ(trackingID)
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Sub total berhasil diupdate.",
+		"data":    updated,
+	})
+}
+
+// ── 2b. Update Nomor Penawaran (log ke BoQ) ────────────────────────────────
+
+func UpdateNomorPenawaranBoQ(c echo.Context) error {
+	trackingID := c.Param("id")
+
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getBoQClaims(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canAccessBoQ(roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
+	}
+
+	var body struct {
+		NomorPenawaran string `json:"nomorPenawaran"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
+	}
+
+	body.NomorPenawaran = strings.TrimSpace(body.NomorPenawaran)
+	if body.NomorPenawaran == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Nomor penawaran wajib diisi."})
+	}
+
+	// Cek duplikat
+	var existing models.TrackingPenawaran
+	if err := config.DB.Where(`"nomor_penawaran" = ? AND "id" != ?`, body.NomorPenawaran, trackingID).
+		First(&existing).Error; err == nil {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "Nomor penawaran sudah digunakan."})
+	}
+
+	// Ambil nomor lama
+	var tracking models.TrackingPenawaran
+	config.DB.Where("id = ?", trackingID).First(&tracking)
+	oldNomor := tracking.NomorPenawaran
+
+	// Update tracking
+	config.DB.Model(&models.TrackingPenawaran{}).
+		Where("id = ?", trackingID).
+		Update("nomor_penawaran", body.NomorPenawaran)
+
+	// Log ke BoQ
+	var boq models.PenyusunanBoQ
+	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&boq).Error; err == nil {
+		if oldNomor != body.NomorPenawaran {
+			keterangan := fmt.Sprintf("Nomor Penawaran: %q → %q", oldNomor, body.NomorPenawaran)
+			appendBoQLog(&boq, "Ubah Nomor Penawaran", keterangan, pegawaiID, namaPegawai)
+		}
+	}
+
+	updated, _ := preloadBoQ(trackingID)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message": "Nomor penawaran berhasil diupdate.",
 		"data":    updated,
 	})
 }
@@ -442,6 +539,15 @@ func UpdateStatusBoQ(c echo.Context) error {
 
 	case "KONFIRMASI_SELESAI":
 		if roleStr == "MASTER" {
+			// Guard: kalau BoQ sudah SELESAI, jangan proses ulang
+			if boq.Status == models.StatusSelesai {
+				updated, _ := preloadBoQ(trackingID)
+				return c.JSON(http.StatusOK, map[string]interface{}{
+					"message": "BoQ sudah disetujui sebelumnya.",
+					"data":    updated,
+				})
+			}
+
 			boq.Status = models.StatusSelesai
 			appendBoQLog(&boq, "Konfirmasi Selesai Diterima", "BoQ disetujui, lanjut ke Review Internal", pegawaiID, namaPegawai)
 			config.DB.Save(&boq)
@@ -453,6 +559,48 @@ func UpdateStatusBoQ(c echo.Context) error {
 					"status":        models.StatusOnProgress,
 				})
 
+			// Tentukan Admin Sekertariat untuk daily
+			var adminPegawai models.Pegawai
+			if divisiStr == string(models.DivisiAdminSekertariat) {
+				adminPegawai.ID = pegawaiID
+				adminPegawai.Nama = namaPegawai
+			} else {
+				if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+				}
+			}
+
+			// Ambil nama perusahaan untuk judul daily
+			var tracking models.TrackingPenawaran
+			config.DB.Preload("Perusahaan").Where("id = ?", trackingID).First(&tracking)
+			namaPerusahaan := tracking.Perusahaan.Nama
+
+			// Hitung deadline 2 hari dari sekarang, jam 5 sore
+			now := time.Now()
+			deadline := time.Date(now.Year(), now.Month(), now.Day()+2, 17, 0, 0, 0, now.Location())
+			if now.After(deadline) {
+				deadline = deadline.Add(24 * time.Hour)
+			}
+
+			// Buat Daily Activity untuk Admin Sekertariat
+			activityAdminID := generateActivityID()
+			dailyAdmin := models.Activity{
+				ID:            activityAdminID,
+				PegawaiID:     adminPegawai.ID,
+				TerkaitPO:     tracking.NomorPO,
+				Perusahaan:    &namaPerusahaan,
+				Kategori:      models.KategoriQuotation,
+				Judul:         "Pengecekan Penawaran " + namaPerusahaan,
+				Deskripsi:     "Activity otomatis setelah BoQ disetujui untuk penawaran #" + tracking.NomorPenawaran,
+				WaktuMulai:    time.Now(),
+				TargetSelesai: deadline,
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&dailyAdmin).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
+			}
+
+			// Buat atau update Review Internal
 			var existingReview models.ReviewInternal
 			reviewExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingReview).Error == nil
 
@@ -460,6 +608,7 @@ func UpdateStatusBoQ(c echo.Context) error {
 				review := models.ReviewInternal{
 					ID:                  uuid.New().String(),
 					TrackingPenawaranID: trackingID,
+					ActivityAdminID:     &activityAdminID,
 					AccAdminDirektur:    false,
 					AccManajerOps:       false,
 					Status:              models.StatusOnProgress,
@@ -469,6 +618,9 @@ func UpdateStatusBoQ(c echo.Context) error {
 				if err := config.DB.Create(&review).Error; err != nil {
 					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Review Internal."})
 				}
+			} else {
+				existingReview.ActivityAdminID = &activityAdminID
+				config.DB.Save(&existingReview)
 			}
 
 		} else {

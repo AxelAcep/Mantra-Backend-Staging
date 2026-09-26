@@ -218,7 +218,7 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 
 		appendReviewInternalLog(
 			&review,
-			"Perlu Tindakan: "+body.Alasan,
+			"Perlu Tindakan",
 			body.Alasan,
 			pegawaiID,
 			namaPegawai,

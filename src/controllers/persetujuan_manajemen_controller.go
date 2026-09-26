@@ -216,7 +216,7 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 
 		appendPersetujuanManajemenLog(
 			&persetujuan,
-			"Perlu Tindakan: "+body.Alasan,
+			"Perlu Tindakan",
 			body.Alasan,
 			pegawaiID,
 			namaPegawai,

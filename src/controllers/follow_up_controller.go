@@ -218,7 +218,7 @@ func UpdateStatusFollowUp(c echo.Context) error {
 			followUp.Status = models.StatusPerluTindakan
 			appendFollowUpLog(
 				&followUp,
-				"Feedback Customer Perlu Tindakan: "+body.Alasan,
+				"Feedback Customer Perlu Tindakan",
 				body.Alasan,
 				pegawaiID,
 				namaPegawai,

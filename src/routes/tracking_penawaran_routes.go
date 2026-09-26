@@ -42,6 +42,7 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	// BOQ
 	g.GET("/:id/boq", controllers.GetDetailBoQ, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/boq/subtotal", controllers.UpdateSubTotalBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.PATCH("/:id/boq/nomor", controllers.UpdateNomorPenawaranBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("/:id/boq/dokumen", controllers.UploadDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.DELETE("/:id/boq/dokumen/:dokumenId", controllers.DeleteDokumenBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/boq/status", controllers.UpdateStatusBoQ, middleware.VerifyToken, middleware.AuthorizeRole(3))
