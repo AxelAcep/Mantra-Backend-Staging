@@ -275,9 +275,19 @@ func AssignPreSales(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Permintaan masuk tidak ditemukan."})
 	}
 
+	// Ambil nama PreSales lama sebelum update
+	namaLama := ""
+	if permintaanMasuk.PreSalesID != nil && *permintaanMasuk.PreSalesID != "" {
+		var oldPreSales models.Pegawai
+		if err := config.DB.Where("id = ?", *permintaanMasuk.PreSalesID).First(&oldPreSales).Error; err == nil {
+			namaLama = oldPreSales.Nama
+		}
+	}
+
 	permintaanMasuk.PreSalesID = &body.PreSalesID
 	permintaanMasuk.Status = models.StatusSelesai
-	appendLog(&permintaanMasuk, "Assign PreSales", pegawai.Nama, pegawaiID, namaPegawai)
+	keterangan := fmt.Sprintf("Pembuat Penawaran dialihkan dari %q ke %q", namaLama, pegawai.Nama)
+	appendLog(&permintaanMasuk, keterangan, "", pegawaiID, namaPegawai)
 	config.DB.Save(&permintaanMasuk)
 
 	// ============ LOGIC BARU ============
@@ -1709,10 +1719,17 @@ func DeletePenawaranDokumen(c echo.Context) error {
 func UpdateDetailTrackingPenawaran(c echo.Context) error {
 	id := c.Param("id")
 
-	_, ok := getPenawaranPegawaiID(c)
+	claims, ok := c.Get("user").(jwt.MapClaims)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	pegawaiID, _ := pegawaiMap["id"].(string)
+	namaPegawai, _ := pegawaiMap["nama"].(string)
+
+	// Ambil data LAMA sebelum update untuk perbandingan log
+	var oldTracking models.TrackingPenawaran
+	config.DB.Where("id = ?", id).First(&oldTracking)
 
 	var body struct {
 		CustomerName  string `json:"customerName"`
@@ -1761,6 +1778,33 @@ func UpdateDetailTrackingPenawaran(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update detail."})
 	}
 
+	// ── Append log ke Permintaan Masuk (dengan old → new) ─────────────────
+	var permintaanMasuk models.PermintaanMasuk
+	if err := config.DB.Where("tracking_penawaran_id = ?", id).First(&permintaanMasuk).Error; err == nil {
+		var changes []string
+		if body.CustomerName != "" && body.CustomerName != oldTracking.CustomerName {
+			changes = append(changes, fmt.Sprintf("Nama Customer: %q → %q", oldTracking.CustomerName, body.CustomerName))
+		}
+		if body.CustomerPhone != "" && body.CustomerPhone != oldTracking.CustomerPhone {
+			changes = append(changes, fmt.Sprintf("Telepon: %q → %q", oldTracking.CustomerPhone, body.CustomerPhone))
+		}
+		if body.CustomerEmail != "" && body.CustomerEmail != oldTracking.CustomerEmail {
+			changes = append(changes, fmt.Sprintf("Email: %q → %q", oldTracking.CustomerEmail, body.CustomerEmail))
+		}
+		if body.LokasiProyek != "" && body.LokasiProyek != oldTracking.LokasiProyek {
+			changes = append(changes, fmt.Sprintf("Lokasi Proyek: %q → %q", oldTracking.LokasiProyek, body.LokasiProyek))
+		}
+		if body.NomorPenawaran != "" && body.NomorPenawaran != oldTracking.NomorPenawaran {
+			changes = append(changes, fmt.Sprintf("Nomor Penawaran: %q → %q", oldTracking.NomorPenawaran, body.NomorPenawaran))
+		}
+
+		if len(changes) > 0 {
+			keterangan := "Edit data: " + strings.Join(changes, "; ")
+			appendLog(&permintaanMasuk, "Edit Detail Tracking", keterangan, pegawaiID, namaPegawai)
+			config.DB.Save(&permintaanMasuk)
+		}
+	}
+
 	return c.JSON(http.StatusOK, map[string]string{"message": "Detail berhasil diupdate."})
 }
 
@@ -1787,6 +1831,16 @@ func AssignMarketing(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Pegawai tidak ditemukan."})
 	}
 
+	// Ambil tracking lama untuk dapat nama PIC lama
+	var tracking models.TrackingPenawaran
+	config.DB.Where("id = ?", trackingID).First(&tracking)
+
+	namaLama := ""
+	var oldMarketing models.Pegawai
+	if err := config.DB.Where("id = ?", tracking.MarketingID).First(&oldMarketing).Error; err == nil {
+		namaLama = oldMarketing.Nama
+	}
+
 	if err := config.DB.Model(&models.TrackingPenawaran{}).
 		Where("id = ?", trackingID).
 		Update("marketing_id", body.MarketingID).Error; err != nil {
@@ -1796,7 +1850,7 @@ func AssignMarketing(c echo.Context) error {
 	// Append log ke permintaan masuk
 	var permintaanMasuk models.PermintaanMasuk
 	if err := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&permintaanMasuk).Error; err == nil {
-		keterangan := "Assign PIC Request"
+		keterangan := fmt.Sprintf("PIC Request dialihkan dari %q ke %q", namaLama, pegawai.Nama)
 
 		// Kalau daily "Permintaan Masuk" udah ada, alihkan tanggung jawabnya
 		// ke Marketing/Sales yang baru (bukan biarin nyantol ke orang lama).
@@ -1804,20 +1858,17 @@ func AssignMarketing(c echo.Context) error {
 			var activity models.Activity
 			if err := config.DB.Where("id = ?", *permintaanMasuk.ActivityID).First(&activity).Error; err == nil {
 				if activity.PegawaiID != body.MarketingID {
-					if err := config.DB.Model(&models.Activity{}).
+					config.DB.Model(&models.Activity{}).
 						Where("id = ?", activity.ID).
-						Update("pegawai_id", body.MarketingID).Error; err == nil {
-						keterangan = "Ganti PIC Request: daily Permintaan Masuk dialihkan ke " + pegawai.Nama
-					}
+						Update("pegawai_id", body.MarketingID)
 				}
 			}
 		}
 
-		appendLog(&permintaanMasuk, keterangan, pegawai.Nama, pegawaiID, namaPegawai)
+		appendLog(&permintaanMasuk, keterangan, "", pegawaiID, namaPegawai)
 		config.DB.Save(&permintaanMasuk)
 	}
 
-	var tracking models.TrackingPenawaran
 	config.DB.
 		Where("id = ?", trackingID).
 		Preload("Marketing").
