@@ -236,12 +236,22 @@ func AdvanceGaransiIfReady(tx *gorm.DB, month *GaransiMonth, pegawaiID, namaPega
 		return nil
 	}
 
+	// Guard idempotency: kalau Garansi ini udah pernah ditandai tuntas, jangan
+	// diproses ulang (termasuk gak bikin dobel daily penawaran maintenance).
+	if garansi.Status == StatusGaransiSelesai {
+		fmt.Println(">>> Garansi udah tuntas sebelumnya, skip:", garansi.ID)
+		return nil
+	}
+
 	var nextMonth GaransiMonth
 	err := tx.Where("garansi_id = ? AND bulan_ke = ?", month.GaransiID, month.BulanKe+1).First(&nextMonth).Error
 	if err != nil {
 		// Tidak ada bulan berikutnya → ini bulan terakhir, Garansi tuntas.
 		fmt.Println(">>> Bulan terakhir garansi tuntas:", garansi.ID)
-		return tx.Model(&Garansi{}).Where("id = ?", garansi.ID).Update("status", StatusGaransiSelesai).Error
+		if err := tx.Model(&Garansi{}).Where("id = ?", garansi.ID).Update("status", StatusGaransiSelesai).Error; err != nil {
+			return err
+		}
+		return CreatePenawaranMaintenanceActivity(tx, &garansi, pegawaiID, namaPegawai)
 	}
 
 	// Guard idempotency: kalau bulan berikutnya udah punya daily, jangan dobel.
@@ -251,4 +261,64 @@ func AdvanceGaransiIfReady(tx *gorm.DB, month *GaransiMonth, pegawaiID, namaPega
 	}
 
 	return CreateGaransiMonthActivity(tx, &nextMonth, garansi.PICID, pegawaiID, namaPegawai)
+}
+
+// CreatePenawaranMaintenanceActivity dipanggil begitu sebuah Garansi tuntas
+// (bulan terakhir DITERIMA) — bikin daily buat Admin Proyek supaya nawarin
+// kontrak maintenance ke customer, sekarang garansinya udah abis.
+func CreatePenawaranMaintenanceActivity(tx *gorm.DB, garansi *Garansi, pegawaiID, namaPegawai string) error {
+	var followUp FollowUp
+	if err := tx.Where("tracking_penawaran_id = ?", garansi.TrackingPenawaranID).First(&followUp).Error; err != nil {
+		fmt.Println(">>> FollowUp tidak ditemukan, skip pembuatan daily penawaran maintenance:", err)
+		return nil
+	}
+	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip pembuatan daily penawaran maintenance")
+		return nil
+	}
+	var adminProyekActivity Activity
+	if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip pembuatan daily penawaran maintenance:", err)
+		return nil
+	}
+
+	kategoriLabel := ""
+	if garansi.KategoriBast != KategoriBastUmum {
+		kategoriLabel = fmt.Sprintf(" %s", garansi.KategoriBast)
+	}
+
+	now := time.Now()
+	activity := Activity{
+		ID:            uuid.New().String(),
+		PegawaiID:     adminProyekActivity.PegawaiID,
+		Kategori:      KategoriAkomodasiProject,
+		Judul:         fmt.Sprintf("Penawaran Maintenance%s ke Customer", kategoriLabel),
+		Deskripsi:     "Activity otomatis setelah masa garansi tuntas — tawarkan kontrak maintenance ke customer.",
+		WaktuMulai:    now,
+		TargetSelesai: now.Add(7 * 24 * time.Hour),
+		Status:        StatusOnProgress,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := tx.Create(&activity).Error; err != nil {
+		fmt.Println(">>> Gagal membuat Activity Penawaran Maintenance:", err)
+		return err
+	}
+
+	garansi.LogAktivitas = append(garansi.LogAktivitas, LogGaransi{
+		Aksi:        "Buat Daily Penawaran Maintenance",
+		Keterangan:  "Garansi tuntas, daily penawaran maintenance ke customer otomatis dibuat untuk Admin Proyek",
+		PegawaiID:   pegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   now,
+	})
+	if err := tx.Model(&Garansi{}).Where("id = ?", garansi.ID).
+		Select("log_aktivitas").
+		Updates(Garansi{LogAktivitas: garansi.LogAktivitas}).Error; err != nil {
+		fmt.Println(">>> Gagal update log Garansi setelah buat daily penawaran maintenance:", err)
+		return err
+	}
+
+	fmt.Println(">>> Daily Penawaran Maintenance dibuat:", activity.ID, "untuk pegawai:", activity.PegawaiID)
+	return nil
 }

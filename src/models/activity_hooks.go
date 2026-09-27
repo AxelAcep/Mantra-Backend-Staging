@@ -60,51 +60,196 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		return err
 	}
 
-	// ── Activity pengecekan Dokumen PO (Admin Proyek/Finance) DITERIMA →
-	//    kalau dua-duanya udah selesai, lanjut nunggu konfirmasi Direktur ──
-	if err := handlePengecekanDokumenPODiterima(tx, a); err != nil {
-		fmt.Println(">>> Error handlePengecekanDokumenPODiterima:", err)
+	// ── Rantai berurutan Stage 4: Admin Proyek → Finance → Admin Sekertaris
+	//    (minta TTD Direktur) → Stage 5 (nunggu konfirmasi Direktur) ────────
+	if err := handlePengecekanAdminProyekDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handlePengecekanAdminProyekDiterima:", err)
+		return err
+	}
+	if err := handlePengecekanFinanceDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handlePengecekanFinanceDiterima:", err)
+		return err
+	}
+	if err := handleMintaTTDDirekturDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handleMintaTTDDirekturDiterima:", err)
 		return err
 	}
 
 	return nil
 }
 
-// ─── Activity pengecekan Dokumen PO (FollowUp Stage 4) DITERIMA ──────────────
-// Dipicu 2x (sekali per activity: Admin Proyek & Finance) — begitu DUA-DUANYA
-// DITERIMA, FollowUp maju ke Stage 5 (nunggu konfirmasi Direktur/Komisaris,
-// lihat KonfirmasiDokumenPO). Guard Stage==4 nyegah re-trigger kalau salah
-// satu daily di-update lagi setelah Stage udah maju.
+// followUpNomorPO ngambil nomor PO/penawaran punya tracking punya FollowUp
+// ini — dipakai di ketiga handler rantai pengecekan dokumen PO di bawah.
+func followUpNomorPO(tx *gorm.DB, followUp *FollowUp) (string, error) {
+	var tracking TrackingPenawaran
+	if err := tx.Where("id = ?", followUp.TrackingPenawaranID).First(&tracking).Error; err != nil {
+		return "", err
+	}
+	nomorPO := tracking.NomorPenawaran
+	if tracking.NomorPO != nil && *tracking.NomorPO != "" {
+		nomorPO = *tracking.NomorPO
+	}
+	return nomorPO, nil
+}
 
-func handlePengecekanDokumenPODiterima(tx *gorm.DB, a *Activity) error {
+// ─── 1. Pengecekan Admin Proyek DITERIMA → buat daily pengecekan Finance ─────
+// Rantai berurutan FollowUp Stage 4: Admin Proyek -> Finance -> Admin
+// Sekertaris (minta TTD Direktur) -> Stage 5. Sebelumnya 2 daily
+// (Admin Proyek & Finance) dibuat BARENGAN/paralel; sekarang berurutan satu-satu.
+
+func handlePengecekanAdminProyekDiterima(tx *gorm.DB, a *Activity) error {
 	var followUp FollowUp
-	err := tx.Where(
-		"(activity_pengecekan_admin_proyek_id = ? OR activity_pengecekan_finance_id = ?) AND stage = ?",
-		a.ID, a.ID, 4,
-	).First(&followUp).Error
+	if err := tx.Where("activity_pengecekan_admin_proyek_id = ?", a.ID).First(&followUp).Error; err != nil {
+		// Bukan activity pengecekan Admin Proyek, skip diam-diam.
+		return nil
+	}
+
+	// Guard idempotency: kalau daily Finance udah pernah dibuat, jangan dobel.
+	if followUp.ActivityPengecekanFinanceID != nil && *followUp.ActivityPengecekanFinanceID != "" {
+		fmt.Println(">>> Daily pengecekan Finance udah ada, skip:", *followUp.ActivityPengecekanFinanceID)
+		return nil
+	}
+
+	fmt.Println(">>> Pengecekan Admin Proyek selesai, buat daily pengecekan Finance:", followUp.ID)
+
+	financeSupervisor, err := FindSupervisiFinanceAccounting(tx)
 	if err != nil {
-		// Bukan activity pengecekan dokumen PO yang lagi di Stage 4, skip diam-diam.
+		fmt.Println(">>> Gagal cari Supervisi Finance Accounting:", err)
+		return err
+	}
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	nomorPO, err := followUpNomorPO(tx, &followUp)
+	if err != nil {
+		fmt.Println(">>> Gagal ambil nomor PO:", err)
+		return err
+	}
+
+	now := time.Now()
+	activityFinance := Activity{
+		ID:            uuid.New().String(),
+		PegawaiID:     financeSupervisor.ID,
+		TerkaitPO:     &nomorPO,
+		Kategori:      KategoriDokumenPendukung,
+		Judul:         "Pengecekan Dokumen PO (Finance)",
+		Deskripsi:     "Cek kelengkapan PO customer & kesiapan data terkait penawaran " + nomorPO + " sebelum lanjut ke proses dokumen PO internal.",
+		WaktuMulai:    now,
+		TargetSelesai: now.Add(24 * time.Hour),
+		Status:        StatusOnProgress,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := tx.Create(&activityFinance).Error; err != nil {
+		fmt.Println(">>> Gagal membuat daily pengecekan Finance:", err)
+		return err
+	}
+
+	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
+		Aksi:        "Pengecekan Admin Proyek Selesai",
+		Keterangan:  "Daily pengecekan Admin Proyek selesai. Lanjut daily pengecekan Finance (" + financeSupervisor.Nama + ").",
+		PegawaiID:   a.PegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   now,
+	})
+
+	return tx.Model(&FollowUp{}).Where("id = ?", followUp.ID).
+		Select("activity_pengecekan_finance_id", "log_aktivitas").
+		Updates(FollowUp{
+			ActivityPengecekanFinanceID: &activityFinance.ID,
+			LogAktivitas:                followUp.LogAktivitas,
+		}).Error
+}
+
+// ─── 2. Pengecekan Finance DITERIMA → buat daily Admin Sekertaris (minta TTD) ─
+
+func handlePengecekanFinanceDiterima(tx *gorm.DB, a *Activity) error {
+	var followUp FollowUp
+	if err := tx.Where("activity_pengecekan_finance_id = ?", a.ID).First(&followUp).Error; err != nil {
+		// Bukan activity pengecekan Finance, skip diam-diam.
 		return nil
 	}
 
-	if followUp.ActivityPengecekanAdminProyekID == nil || followUp.ActivityPengecekanFinanceID == nil {
+	// Guard idempotency: kalau daily minta TTD Direktur udah pernah dibuat, jangan dobel.
+	if followUp.ActivityMintaTTDDirekturID != nil && *followUp.ActivityMintaTTDDirekturID != "" {
+		fmt.Println(">>> Daily minta TTD Direktur udah ada, skip:", *followUp.ActivityMintaTTDDirekturID)
 		return nil
 	}
 
-	var adminProyekAct, financeAct Activity
-	if err := tx.Where("id = ?", *followUp.ActivityPengecekanAdminProyekID).First(&adminProyekAct).Error; err != nil {
-		return nil
+	fmt.Println(">>> Pengecekan Finance selesai, buat daily Admin Sekertaris minta TTD Direktur:", followUp.ID)
+
+	var adminSekertaris Pegawai
+	if err := tx.Where("divisi = ?", DivisiAdminSekertaris).First(&adminSekertaris).Error; err != nil {
+		fmt.Println(">>> Gagal cari Admin Sekertaris:", err)
+		return fmt.Errorf("admin Sekertaris belum ada/belum di-assign — hubungi admin buat set divisi Admin Sekertaris")
 	}
-	if err := tx.Where("id = ?", *followUp.ActivityPengecekanFinanceID).First(&financeAct).Error; err != nil {
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	nomorPO, err := followUpNomorPO(tx, &followUp)
+	if err != nil {
+		fmt.Println(">>> Gagal ambil nomor PO:", err)
+		return err
+	}
+
+	now := time.Now()
+	activityTTD := Activity{
+		ID:            uuid.New().String(),
+		PegawaiID:     adminSekertaris.ID,
+		TerkaitPO:     &nomorPO,
+		Kategori:      KategoriDokumenPendukung,
+		Judul:         "Minta TTD Direktur - Dokumen PO",
+		Deskripsi:     "Meminta tanda tangan Direktur untuk dokumen PO terkait penawaran " + nomorPO,
+		WaktuMulai:    now,
+		TargetSelesai: now.Add(24 * time.Hour),
+		Status:        StatusOnProgress,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := tx.Create(&activityTTD).Error; err != nil {
+		fmt.Println(">>> Gagal membuat daily minta TTD Direktur:", err)
+		return err
+	}
+
+	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
+		Aksi:        "Pengecekan Finance Selesai",
+		Keterangan:  "Daily pengecekan Finance selesai. Lanjut daily Admin Sekertaris (" + adminSekertaris.Nama + ") minta TTD Direktur.",
+		PegawaiID:   a.PegawaiID,
+		NamaPegawai: namaPegawai,
+		CreatedAt:   now,
+	})
+
+	return tx.Model(&FollowUp{}).Where("id = ?", followUp.ID).
+		Select("activity_minta_ttd_direktur_id", "log_aktivitas").
+		Updates(FollowUp{
+			ActivityMintaTTDDirekturID: &activityTTD.ID,
+			LogAktivitas:               followUp.LogAktivitas,
+		}).Error
+}
+
+// ─── 3. Admin Sekertaris minta TTD Direktur DITERIMA → Stage 5 ──────────────
+// Ini penutup rantai berurutan Stage 4 -- begitu daily ke-3 ini DITERIMA,
+// FollowUp maju ke Stage 5 (nunggu konfirmasi Direktur/Komisaris, lihat
+// KonfirmasiDokumenPO). Guard Stage==4 nyegah re-trigger kalau daily ini
+// di-update lagi setelah Stage udah maju.
+
+func handleMintaTTDDirekturDiterima(tx *gorm.DB, a *Activity) error {
+	var followUp FollowUp
+	err := tx.Where("activity_minta_ttd_direktur_id = ? AND stage = ?", a.ID, 4).First(&followUp).Error
+	if err != nil {
+		// Bukan activity minta TTD Direktur yang lagi di Stage 4, skip diam-diam.
 		return nil
 	}
 
-	if adminProyekAct.Status != StatusDiterima || financeAct.Status != StatusDiterima {
-		fmt.Println(">>> Pengecekan Dokumen PO belum dua-duanya selesai, skip:", followUp.ID)
-		return nil
-	}
-
-	fmt.Println(">>> Dua daily pengecekan Dokumen PO selesai, FollowUp lanjut Stage 5:", followUp.ID)
+	fmt.Println(">>> Admin Sekertaris selesai minta TTD Direktur, FollowUp lanjut Stage 5:", followUp.ID)
 
 	namaPegawai := ""
 	var pegawai Pegawai
@@ -113,8 +258,8 @@ func handlePengecekanDokumenPODiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
-		Aksi:        "Pengecekan Dokumen PO Selesai",
-		Keterangan:  "Daily pengecekan Admin Proyek & Finance dua-duanya selesai. Menunggu konfirmasi Direktur/Komisaris.",
+		Aksi:        "Minta TTD Direktur Selesai",
+		Keterangan:  "Admin Sekertaris selesai meminta TTD Direktur atas dokumen PO. Menunggu konfirmasi Direktur/Komisaris.",
 		PegawaiID:   a.PegawaiID,
 		NamaPegawai: namaPegawai,
 		CreatedAt:   time.Now(),
@@ -147,22 +292,74 @@ func handleQuotationDiterima(tx *gorm.DB, a *Activity) error {
 		namaPegawai = pegawai.Nama
 	}
 
-	fmt.Println(">>> Daily selesai, Review Internal langsung selesai")
+	// wasPerluTindakan: daily ini abis di-reschedule ulang (ON_PROGRESS ->
+	// DITERIMA lagi) setelah Supervisi Sales nolak -- kalau iya, WAJIB
+	// diproses ulang biarpun AccAdminDirektur/AccManajerOps masih true dari
+	// sebelumnya (guard idempotency di bawah gak boleh nge-skip ini).
+	wasPerluTindakan := review.Status == StatusPerluTindakan
 
-	// Review Internal selesai
+	// Guard idempotency: jangan re-ACC otomatis kalau udah pernah kejadian
+	// (dan bukan kasus revisi setelah ditolak).
+	if review.AccAdminDirektur && review.AccManajerOps && !wasPerluTindakan {
+		fmt.Println(">>> Review Internal udah pernah ke-ACC otomatis, skip:", review.ID)
+		return nil
+	}
+
+	fmt.Println(">>> Daily Pengecekan Penawaran selesai, ACC Admin Sekertaris & Manager Ops otomatis")
+
+	// ACC Admin Sekertaris & Manager Ops otomatis begitu daily-nya selesai.
+	// TAPI gak langsung Selesai -- masih nunggu 1 gate manual lagi: approval
+	// Supervisi Sales (AccSupervisiSales), mirip AccDirekturKomisaris di
+	// Persetujuan Manajemen. Lihat TryFinalizeReviewInternal.
 	review.AccAdminDirektur = true
 	review.AccManajerOps = true
-	review.Status = StatusSelesai
-	appendReviewInternalLogDirect(&review, "Review Internal Selesai", "Otomatis selesai setelah daily Pengecekan Penawaran selesai", a.PegawaiID, namaPegawai)
+	if wasPerluTindakan {
+		// Daily udah direvisi & disetujui lagi -> Review Internal siap
+		// dikonfirmasi Supervisi Sales lagi, gak perlu proses manual
+		// "konfirmasi ulang" terpisah.
+		review.Status = StatusOnProgress
+		appendReviewInternalLogDirect(&review, "ACC Otomatis (Revisi)", "Admin Sekertaris & Manager Ops otomatis ACC lagi setelah daily Pengecekan Penawaran direvisi & disetujui ulang. Menunggu approval Supervisi Sales lagi.", a.PegawaiID, namaPegawai)
+		tx.Model(&TrackingPenawaran{}).Where("id = ?", review.TrackingPenawaranID).Update("status", StatusOnProgress)
+	} else {
+		appendReviewInternalLogDirect(&review, "ACC Otomatis", "Admin Sekertaris & Manager Ops otomatis ACC setelah daily Pengecekan Penawaran selesai. Menunggu approval Supervisi Sales.", a.PegawaiID, namaPegawai)
+	}
 	tx.Save(&review)
 
+	return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)
+}
+
+// TryFinalizeReviewInternal ngecek 3 syarat approval Review Internal (Admin
+// Sekertaris, Manager Ops -- dua-duanya auto-set begitu daily Pengecekan
+// Penawaran selesai -- dan Supervisi Sales -- WAJIB dipencet manual lewat
+// endpoint ACC). Begitu ketiganya lengkap, baru Status jadi SELESAI dan lanjut
+// bikin Persetujuan Manajemen. Dipanggil dari 2 titik: hook otomatis (pas
+// daily selesai) dan endpoint manual ACC (pas Supervisi Sales approve) --
+// gak peduli urutan mana yang duluan lengkap.
+func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, namaPegawai string) error {
+	if !(review.AccAdminDirektur && review.AccManajerOps && review.AccSupervisiSales) {
+		fmt.Println(">>> Review Internal belum lengkap approval-nya, skip finalize:", review.ID)
+		return nil
+	}
+	if review.Status == StatusSelesai {
+		fmt.Println(">>> Review Internal udah SELESAI, skip finalize dobel:", review.ID)
+		return nil
+	}
+
+	review.Status = StatusSelesai
+	appendReviewInternalLogDirect(review, "Review Internal Selesai", "Semua approval lengkap (Admin Sekertaris, Manager Ops, Supervisi Sales), lanjut ke Persetujuan Manajemen", pegawaiID, namaPegawai)
+	if err := tx.Save(review).Error; err != nil {
+		return err
+	}
+
 	// Update TrackingPenawaran ke step berikutnya
-	tx.Model(&TrackingPenawaran{}).
+	if err := tx.Model(&TrackingPenawaran{}).
 		Where("id = ?", review.TrackingPenawaranID).
 		Updates(map[string]interface{}{
 			"step_saat_ini": StepPersetujuanManajemen,
 			"status":        StatusOnProgress,
-		})
+		}).Error; err != nil {
+		return err
+	}
 
 	// Buat Persetujuan Manajemen
 	var existing PersetujuanManajemen
@@ -175,7 +372,9 @@ func handleQuotationDiterima(tx *gorm.DB, a *Activity) error {
 			CreatedAt:            time.Now(),
 			UpdatedAt:            time.Now(),
 		}
-		tx.Create(&persetujuan)
+		if err := tx.Create(&persetujuan).Error; err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -218,11 +417,6 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
-	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
-		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip")
-		return nil
-	}
-
 	// Hold pengantaran jika kondisi SESUDAH_DP dan termin 1 belum lunas.
 	// Pengantaran baru dibuat otomatis setelah termin 1 ditandai lunas
 	// (lihat resume di handleItemTerminDiterima / BayarItemTermin).
@@ -243,12 +437,6 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		}
 	}
 
-	var adminProyekActivity Activity
-	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
-		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip:", err)
-		return nil
-	}
-
 	// Ambil nama pegawai yang meng-update (buat log)
 	namaPegawai := ""
 	var pegawai Pegawai
@@ -256,10 +444,14 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		namaPegawai = pegawai.Nama
 	}
 
+	// Pengantaran sekarang PIC-nya Supervisi PGA -- sama kayak Pembelian
+	// (activity a ini), bukan Admin Proyek lagi. Dulu di sini dicari Admin
+	// Proyek buat jadi PIC-nya; sekarang tinggal dilanjutkan aja ke pegawai
+	// yang sama yang ngerjain Pembelian (a.PegawaiID).
 	now := time.Now()
 	pengantaranActivity := Activity{
 		ID:            uuid.New().String(),
-		PegawaiID:     adminProyekActivity.PegawaiID,
+		PegawaiID:     a.PegawaiID,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity otomatis pengantaran barang untuk tahap Implementasi setelah pembelian barang diterima",
@@ -281,7 +473,7 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 	// (bukan Save(&impl)) biar gak nge-upsert ulang association (mis. impl.Barang).
 	impl.LogAktivitas = append(impl.LogAktivitas, LogImplementasi{
 		Aksi:        "Buat Activity Pengantaran",
-		Keterangan:  fmt.Sprintf("Activity pengantaran otomatis dibuat untuk %s, deadline 2 hari", adminProyekActivity.Pegawai.Nama),
+		Keterangan:  fmt.Sprintf("Activity pengantaran otomatis dibuat untuk %s (Supervisi PGA), deadline 2 hari", namaPegawai),
 		PegawaiID:   a.PegawaiID,
 		NamaPegawai: namaPegawai,
 		CreatedAt:   now,
@@ -319,6 +511,24 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 
 	fmt.Println(">>> Activity Pengantaran Barang DITERIMA, buat Activity Instalasi untuk tracking:", impl.TrackingPenawaranID)
 
+	// Instalasi tetap PIC-nya Admin Proyek (bukan Supervisi PGA kayak
+	// Pembelian/Pengantaran di atas) -- makanya dicari lagi ke FollowUp, gak
+	// bisa asal pakai a.PegawaiID (yang sekarang Supervisi PGA).
+	var followUp FollowUp
+	if err := tx.Where("tracking_penawaran_id = ?", impl.TrackingPenawaranID).First(&followUp).Error; err != nil {
+		fmt.Println(">>> FollowUp tidak ditemukan, skip:", err)
+		return nil
+	}
+	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
+		fmt.Println(">>> FollowUp belum punya Admin Proyek, skip")
+		return nil
+	}
+	var adminProyekActivity Activity
+	if err := tx.Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
+		fmt.Println(">>> Activity Admin Proyek tidak ditemukan, skip:", err)
+		return nil
+	}
+
 	// Ambil nama pegawai yang meng-update (buat log)
 	namaPegawai := ""
 	var pegawai Pegawai
@@ -329,7 +539,7 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 	now := time.Now()
 	instalasiActivity := Activity{
 		ID:            uuid.New().String(),
-		PegawaiID:     a.PegawaiID,
+		PegawaiID:     adminProyekActivity.PegawaiID,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Instalasi Barang Implementasi",
 		Deskripsi:     "Activity otomatis instalasi barang untuk tahap Implementasi setelah pengantaran barang diterima",
@@ -756,24 +966,25 @@ func handleItemTerminDiterima(tx *gorm.DB, a *Activity) error {
 // ─── Resume Pengantaran Hold ───────────────────────────────────────────────
 // Dipanggil saat termin 1 lunas (SudahDibayar) dan kondisi SESUDAH_DP.
 // Membuat ActivityPengantaran yang sebelumnya di-hold karena pembayaran DP
-// belum diterima. Logic pembuatan activity sama dengan handlePembelianBarangDiterima.
+// belum diterima. Logic pembuatan activity sama dengan handlePembelianBarangDiterima
+// -- PIC-nya Supervisi PGA (dari Activity Pembelian), bukan Admin Proyek.
 
 func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) error {
-	if followUp.ActivityAdminProyekID == nil || *followUp.ActivityAdminProyekID == "" {
-		fmt.Println(">>> ResumePengantaranHold: FollowUp belum punya Admin Proyek, skip")
+	if impl.ActivityPembelianID == nil || *impl.ActivityPembelianID == "" {
+		fmt.Println(">>> ResumePengantaranHold: Activity Pembelian belum ada, skip")
 		return nil
 	}
 
-	var adminProyekActivity Activity
-	if err := tx.Preload("Pegawai").Where("id = ?", *followUp.ActivityAdminProyekID).First(&adminProyekActivity).Error; err != nil {
-		fmt.Println(">>> ResumePengantaranHold: Activity Admin Proyek tidak ditemukan, skip:", err)
+	var pembelianActivity Activity
+	if err := tx.Preload("Pegawai").Where("id = ?", *impl.ActivityPembelianID).First(&pembelianActivity).Error; err != nil {
+		fmt.Println(">>> ResumePengantaranHold: Activity Pembelian tidak ditemukan, skip:", err)
 		return nil
 	}
 
 	now := time.Now()
 	pengantaranActivity := Activity{
 		ID:            uuid.New().String(),
-		PegawaiID:     adminProyekActivity.PegawaiID,
+		PegawaiID:     pembelianActivity.PegawaiID,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity pengantaran barang (dilanjutkan setelah termin 1 DP lunas)",
@@ -793,9 +1004,9 @@ func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) 
 
 	impl.LogAktivitas = append(impl.LogAktivitas, LogImplementasi{
 		Aksi:        "Buat Activity Pengantaran (Resume)",
-		Keterangan:  fmt.Sprintf("Activity pengantaran dilanjutkan setelah termin 1 DP lunas, deadline 2 hari, PIC: %s", adminProyekActivity.Pegawai.Nama),
-		PegawaiID:   adminProyekActivity.PegawaiID,
-		NamaPegawai: adminProyekActivity.Pegawai.Nama,
+		Keterangan:  fmt.Sprintf("Activity pengantaran dilanjutkan setelah termin 1 DP lunas, deadline 2 hari, PIC: %s (Supervisi PGA)", pembelianActivity.Pegawai.Nama),
+		PegawaiID:   pembelianActivity.PegawaiID,
+		NamaPegawai: pembelianActivity.Pegawai.Nama,
 		CreatedAt:   now,
 	})
 

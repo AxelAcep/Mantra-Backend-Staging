@@ -202,14 +202,14 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
-		// Tentukan Admin Sekertariat untuk daily
+		// Tentukan Admin Sekertaris untuk daily
 		var adminPegawai models.Pegawai
-		if divisiStr == string(models.DivisiAdminSekertariat) {
+		if divisiStr == string(models.DivisiAdminSekertaris) {
 			adminPegawai.ID = pegawaiID
 			adminPegawai.Nama = namaPegawai
 		} else {
-			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminPegawai).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertaris tidak ditemukan."})
 			}
 		}
 
@@ -225,7 +225,7 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 			deadline = deadline.Add(24 * time.Hour)
 		}
 
-		// Buat Daily Activity untuk Admin Sekertariat
+		// Buat Daily Activity untuk Admin Sekertaris
 		activityAdminID := generateActivityID()
 		dailyAdmin := models.Activity{
 			ID:            activityAdminID,
@@ -559,14 +559,14 @@ func UpdateStatusBoQ(c echo.Context) error {
 					"status":        models.StatusOnProgress,
 				})
 
-			// Tentukan Admin Sekertariat untuk daily
+			// Tentukan Admin Sekertaris untuk daily
 			var adminPegawai models.Pegawai
-			if divisiStr == string(models.DivisiAdminSekertariat) {
+			if divisiStr == string(models.DivisiAdminSekertaris) {
 				adminPegawai.ID = pegawaiID
 				adminPegawai.Nama = namaPegawai
 			} else {
-				if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminPegawai).Error; err != nil {
-					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertariat tidak ditemukan."})
+				if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminPegawai).Error; err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Admin Sekertaris tidak ditemukan."})
 				}
 			}
 
@@ -582,7 +582,7 @@ func UpdateStatusBoQ(c echo.Context) error {
 				deadline = deadline.Add(24 * time.Hour)
 			}
 
-			// Buat Daily Activity untuk Admin Sekertariat
+			// Buat Daily Activity untuk Admin Sekertaris
 			activityAdminID := generateActivityID()
 			dailyAdmin := models.Activity{
 				ID:            activityAdminID,

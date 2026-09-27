@@ -152,6 +152,10 @@ type ReviewInternal struct {
 	ActivityAdmin       *Activity              `gorm:"foreignKey:ActivityAdminID;references:ID"     json:"activityAdmin,omitempty"`
 	AccAdminDirektur    bool                   `gorm:"not null;default:false"                       json:"accAdminDirektur"`
 	AccManajerOps       bool                   `gorm:"not null;default:false"                       json:"accManajerOps"`
+	// Gate approval manual (mirip AccDirekturKomisaris di Persetujuan
+	// Manajemen) — HARUS dipencet tombol approve oleh role SUPERVISI + divisi
+	// SALES, gak ke-auto-set kayak 2 field di atas. Lihat models.TryFinalizeReviewInternal.
+	AccSupervisiSales   bool                   `gorm:"not null;default:false"                       json:"accSupervisiSales"`
 	Status              StatusActivity         `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
 	LogAktivitas        []LogReviewInternal    `gorm:"serializer:json;default:'[]'"                 json:"logs"`
 	Dokumen             []PenawaranDokumen     `gorm:"foreignKey:ReviewInternalID"                  json:"dokumen,omitempty"`
@@ -274,9 +278,11 @@ type FollowUp struct {
 
 	// ─── Flow "Pengecekan & Konfirmasi Dokumen PO" (Stage 3→6) ──────────────
 	// Stage 3: Sales selesai, nunggu MO milih Admin Proyek (belum ada daily).
-	// Stage 4: MO udah milih -> AdminProyekID keisi + 2 daily pengecekan
-	//          (Admin Proyek & Finance Supervisi) dibuat bareng.
-	// Stage 5: Dua-duanya daily pengecekan DITERIMA -> nunggu konfirmasi
+	// Stage 4: MO udah milih -> AdminProyekID keisi + daily pengecekan
+	//          berjalan BERURUTAN (bukan paralel): Admin Proyek dulu -> abis
+	//          itu Finance Supervisi -> abis itu Admin Sekertaris minta TTD
+	//          Direktur. Tiap daily baru dibuat begitu daily sebelumnya DITERIMA.
+	// Stage 5: Daily Admin Sekertaris (minta TTD) DITERIMA -> nunggu konfirmasi
 	//          Direktur/Komisaris (gak pake daily, mirip Persetujuan Manajemen).
 	// Stage 6: Direktur/Komisaris ACC -> baru daily "Upload Dokumen PO" buat
 	//          Admin Proyek (ActivityAdminProyekID di atas) dibuat.
@@ -288,6 +294,12 @@ type FollowUp struct {
 
 	ActivityPengecekanFinanceID *string   `gorm:"index"                                                 json:"activityPengecekanFinanceId,omitempty"`
 	ActivityPengecekanFinance   *Activity `gorm:"foreignKey:ActivityPengecekanFinanceID;references:ID" json:"activityPengecekanFinance,omitempty"`
+
+	// Daily ke-3 dalam rantai (setelah Admin Proyek & Finance) -- Admin
+	// Sekertaris minta TTD Direktur atas dokumen PO. Begitu ini DITERIMA,
+	// baru lanjut Stage 5 (konfirmasi Direktur/Komisaris).
+	ActivityMintaTTDDirekturID *string   `gorm:"index"                                             json:"activityMintaTTDDirekturId,omitempty"`
+	ActivityMintaTTDDirektur   *Activity `gorm:"foreignKey:ActivityMintaTTDDirekturID;references:ID" json:"activityMintaTTDDirektur,omitempty"`
 
 	AccDirekturKomisarisPO bool `gorm:"not null;default:false" json:"accDirekturKomisarisPO"`
 

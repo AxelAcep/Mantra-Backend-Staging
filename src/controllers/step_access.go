@@ -53,6 +53,13 @@ func canViewStep(step models.StepPenawaran, roleStr, divisiStr string) bool {
 	case "MANAGER_OPERASIONAL", "DIREKTUR", "KOMISARIS":
 		return true
 	}
+	// Supervisi Sales -- approver gate di Review Internal (lihat
+	// TryFinalizeReviewInternal/UpdateStatusReviewInternal), boleh liat SEMUA
+	// tracking di step ini, gak cuma yang sales-nya terkait dia (beda sama
+	// isRelatedSales di bawah, yang di-scope per-tracking).
+	if step == models.StepReviewInternal && roleStr == "SUPERVISI" && divisiStr == "SALES" {
+		return true
+	}
 	for _, d := range stepAllowedDivisi[step] {
 		if d == divisiStr {
 			return true
@@ -62,24 +69,45 @@ func canViewStep(step models.StepPenawaran, roleStr, divisiStr string) bool {
 }
 
 // isAssignedAdminProyek ngecek apakah pegawai yang login ini emang Admin
-// Proyek yang di-assign ke tracking tsb (lewat FollowUp.ActivityAdminProyek).
+// Proyek yang di-assign ke tracking tsb -- pakai FollowUp.AdminProyekID
+// (di-set langsung begitu AssignAdminProyek pertama kali milih orangnya,
+// Stage 3->4), BUKAN FollowUp.ActivityAdminProyekID (itu baru ke-isi belakangan
+// di Stage 6 pas daily Upload Dokumen PO dibuat -- kalau dipakai buat guard
+// akses, Admin Proyek yang bersangkutan gak bakal punya akses sama sekali
+// selama Stage 3-5, padahal itu justru bagian paling aktif dia ngerjain
+// pengecekan dokumen PO).
 func isAssignedAdminProyek(pegawaiID, trackingID string) bool {
 	if pegawaiID == "" {
 		return false
 	}
 	var followUp models.FollowUp
 	if err := config.DB.
-		Preload("ActivityAdminProyek").
 		Where("tracking_penawaran_id = ?", trackingID).
 		First(&followUp).Error; err != nil {
 		return false
 	}
-	return followUp.ActivityAdminProyek != nil && followUp.ActivityAdminProyek.PegawaiID == pegawaiID
+	return followUp.AdminProyekID != nil && *followUp.AdminProyekID == pegawaiID
 }
 
-// canViewStepForTracking = canViewStep + pengecualian Admin Proyek buat step
-// Follow Up/Implementasi/BAST/Garansi (tahap-tahap yang aksesnya bisa
-// tergantung assignment per-tracking, bukan cuma divisi).
+// isRelatedSales ngecek apakah pegawai yang login ini adalah Sales/Marketing
+// yang bikin tracking ini (TrackingPenawaran.MarketingID) -- bukan divisi
+// tetap kayak Supervisi Sales di atas, tapi pegawai spesifik per-tracking,
+// mirip isAssignedAdminProyek.
+func isRelatedSales(pegawaiID, trackingID string) bool {
+	if pegawaiID == "" {
+		return false
+	}
+	var tracking models.TrackingPenawaran
+	if err := config.DB.Where("id = ?", trackingID).First(&tracking).Error; err != nil {
+		return false
+	}
+	return tracking.MarketingID == pegawaiID
+}
+
+// canViewStepForTracking = canViewStep + pengecualian yang aksesnya
+// tergantung assignment per-tracking, bukan cuma divisi: Admin Proyek buat
+// step Follow Up/Implementasi/BAST/Garansi, dan Sales terkait buat step
+// Review Internal.
 func canViewStepForTracking(step models.StepPenawaran, roleStr, divisiStr, pegawaiID, trackingID string) bool {
 	if canViewStep(step, roleStr, divisiStr) {
 		return true
@@ -87,6 +115,8 @@ func canViewStepForTracking(step models.StepPenawaran, roleStr, divisiStr, pegaw
 	switch step {
 	case models.StepFollowUp, models.StepImplementasi, models.StepBAST, models.StepGaransi:
 		return isAssignedAdminProyek(pegawaiID, trackingID)
+	case models.StepReviewInternal:
+		return isRelatedSales(pegawaiID, trackingID)
 	}
 	return false
 }

@@ -50,11 +50,11 @@ func preloadReviewInternal(trackingID string) (models.ReviewInternal, error) {
 func GetDetailReviewInternal(c echo.Context) error {
     trackingID := c.Param("id")
 
-    _, _, roleStr, divisiStr, ok := getReviewClaims(c)
+    pegawaiID, _, roleStr, divisiStr, ok := getReviewClaims(c)
     if !ok {
         return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
     }
-    if !canViewStep(models.StepReviewInternal, roleStr, divisiStr) {
+    if !canViewStepForTracking(models.StepReviewInternal, roleStr, divisiStr, pegawaiID, trackingID) {
         return c.JSON(http.StatusForbidden, map[string]string{"error": "Akses ditolak."})
     }
 
@@ -100,8 +100,11 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 		})
 	}
 
-	isAdminSekertariat := divisiStr == "ADMIN_SEKERTARIAT"
+	isAdminSekertaris := divisiStr == "ADMIN_SEKERTARIS"
 	isManajerOps := divisiStr == "MANAGER_OPERASIONAL"
+	// Gate approval baru, mirip Direktur/Komisaris di Persetujuan Manajemen --
+	// WAJIB dipencet manual, gak ke-auto-set kayak 2 di atas.
+	isSupervisiSales := roleStr == "SUPERVISI" && divisiStr == "SALES"
 
 	isSalesPresalesSupervisi :=
 		divisiStr == "SALES" ||
@@ -112,9 +115,9 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 
 	case "ACC":
 
-		if !isAdminSekertariat && !isManajerOps {
+		if !isAdminSekertaris && !isManajerOps && !isSupervisiSales {
 			return c.JSON(http.StatusForbidden, map[string]string{
-				"error": "Hanya Admin Sekertariat atau Manajer Operasional yang bisa acc.",
+				"error": "Hanya Admin Sekertaris, Manajer Operasional, atau Supervisi Sales yang bisa acc.",
 			})
 		}
 
@@ -124,13 +127,13 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 			})
 		}
 
-		if isAdminSekertariat {
+		if isAdminSekertaris {
 			review.AccAdminDirektur = true
 
 			appendReviewInternalLog(
 				&review,
-				"ACC Admin Sekertariat",
-				"Review Internal disetujui oleh Admin Sekertariat",
+				"ACC Admin Sekertaris",
+				"Review Internal disetujui oleh Admin Sekertaris",
 				pegawaiID,
 				namaPegawai,
 			)
@@ -148,63 +151,33 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 			)
 		}
 
-		// Kalau dua-duanya sudah acc
-		if review.AccAdminDirektur && review.AccManajerOps {
-
-			review.Status = models.StatusSelesai
+		if isSupervisiSales {
+			review.AccSupervisiSales = true
 
 			appendReviewInternalLog(
 				&review,
-				"Review Internal Selesai",
-				"Semua approval selesai, lanjut ke Persetujuan Manajemen",
+				"ACC Supervisi Sales",
+				"Review Internal disetujui oleh Supervisi Sales",
 				pegawaiID,
 				namaPegawai,
 			)
+		}
 
-			config.DB.Save(&review)
-
-			config.DB.Model(&models.TrackingPenawaran{}).
-				Where("id = ?", trackingID).
-				Updates(map[string]interface{}{
-					"step_saat_ini": models.StepPersetujuanManajemen,
-					"status":        models.StatusOnProgress,
-				})
-
-			var existingPersetujuan models.PersetujuanManajemen
-
-			persetujuanExists :=
-				config.DB.
-					Where("tracking_penawaran_id = ?", trackingID).
-					First(&existingPersetujuan).Error == nil
-
-			if !persetujuanExists {
-
-				persetujuan := models.PersetujuanManajemen{
-					ID:                   uuid.New().String(),
-					TrackingPenawaranID:  trackingID,
-					AccDirekturKomisaris: false,
-					Status:               models.StatusOnProgress,
-					CreatedAt:            time.Now(),
-					UpdatedAt:            time.Now(),
-				}
-
-				if err := config.DB.Create(&persetujuan).Error; err != nil {
-					return c.JSON(http.StatusInternalServerError, map[string]string{
-						"error": "Gagal membuat Persetujuan Manajemen.",
-					})
-				}
-			}
-
-		} else {
-
-			config.DB.Save(&review)
+		// appendReviewInternalLog di atas udah nyimpen tiap flag begitu
+		// diubah -- di sini tinggal cek apakah 3 gate approval-nya (Admin
+		// Sekertaris, Manager Ops, Supervisi Sales) udah lengkap, kalau iya
+		// baru Status jadi SELESAI + lanjut bikin Persetujuan Manajemen.
+		if err := models.TryFinalizeReviewInternal(config.DB, &review, pegawaiID, namaPegawai); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "Gagal menyelesaikan Review Internal.",
+			})
 		}
 
 	case "PERLU_TINDAKAN":
 
-		if !isAdminSekertariat && !isManajerOps {
+		if !isAdminSekertaris && !isManajerOps && !isSupervisiSales {
 			return c.JSON(http.StatusForbidden, map[string]string{
-				"error": "Hanya Admin Sekertariat atau Manajer Operasional yang bisa menolak.",
+				"error": "Hanya Admin Sekertaris, Manajer Operasional, atau Supervisi Sales yang bisa menolak.",
 			})
 		}
 
@@ -215,6 +188,12 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 		}
 
 		review.Status = models.StatusPerluTindakan
+		// ACC Admin Sekertaris/Manajer Ops yang udah kejadi cuma efek samping
+		// dari daily Pengecekan Penawaran DITERIMA -- kalau ditolak, daily itu
+		// mesti direvisi ulang, jadi ACC lama gak valid lagi sampai direvisi &
+		// disetujui ulang (lihat handleQuotationDiterima).
+		review.AccAdminDirektur = false
+		review.AccManajerOps = false
 
 		appendReviewInternalLog(
 			&review,
@@ -223,6 +202,30 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 			pegawaiID,
 			namaPegawai,
 		)
+
+		// Auto-reschedule: buka lagi daily Pengecekan Penawaran (punya Admin
+		// Sekertaris) yang tadinya DITERIMA jadi ON_PROGRESS dengan deadline
+		// baru + catat alasan penolakan di daily-nya juga -- gak perlu proses
+		// manual "konfirmasi ulang" terpisah, begitu daily ini disetujui lagi
+		// Review Internal otomatis lanjut sendiri.
+		if review.ActivityAdminID != nil && *review.ActivityAdminID != "" {
+			now := time.Now()
+			deadline := time.Date(now.Year(), now.Month(), now.Day()+2, 17, 0, 0, 0, now.Location())
+			if now.After(deadline) {
+				deadline = deadline.Add(24 * time.Hour)
+			}
+			if err := config.DB.Model(&models.Activity{}).
+				Where("id = ?", *review.ActivityAdminID).
+				Updates(map[string]interface{}{
+					"status":           models.StatusOnProgress,
+					"target_selesai":   deadline,
+					"alasan_penolakan": body.Alasan,
+				}).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "Gagal reschedule daily Admin Sekertaris.",
+				})
+			}
+		}
 
 		config.DB.Save(&review)
 

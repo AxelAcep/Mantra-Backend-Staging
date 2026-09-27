@@ -44,6 +44,7 @@ func preloadFollowUp(trackingID string) (models.FollowUp, error) {
 		Preload("ActivityAdminProyek.Pegawai").
 		Preload("ActivityPengecekanAdminProyek.Pegawai").
 		Preload("ActivityPengecekanFinance.Pegawai").
+		Preload("ActivityMintaTTDDirektur.Pegawai").
 		Preload("Dokumen").
 		Preload("Dokumen.Pegawai").
 		First(&followUp).Error
@@ -183,22 +184,25 @@ func UpdateStatusFollowUp(c echo.Context) error {
 			}
 
 			followUp.Stage = 3
-			followUp.Status = models.StatusSelesai
+			// BUKAN StatusSelesai -- Stage 3 cuma "siap pilih Admin Proyek",
+			// Follow Up masih panjang lagi (pengecekan PO Admin Proyek ->
+			// Finance -> Admin Sekertaris -> konfirmasi Direktur -> upload PO,
+			// Stage 4-6). FollowUp.Status baru boleh SELESAI kalau Stage 6
+			// beneran tuntas (lihat UploadDokumenFollowUp). Sebelumnya di sini
+			// salah nge-set SELESAI + lompat ke StepImplementasi padahal rantai
+			// Stage 4-6 belum jalan sama sekali.
+			followUp.Status = models.StatusOnProgress
 			appendFollowUpLog(
 				&followUp,
 				"Feedback Customer Disetujui",
-				"Persetujuan diberikan oleh Manager Operasional. Feedback customer dikonfirmasi valid.",
+				"Persetujuan diberikan oleh Manager Operasional. Feedback customer dikonfirmasi valid, lanjut pemilihan Admin Proyek.",
 				pegawaiID,
 				namaPegawai,
 			)
 
-			// Lanjut ke Step 6 (IMPLEMENTASI)
 			config.DB.Model(&models.TrackingPenawaran{}).
 				Where("id = ?", trackingID).
-				Updates(map[string]interface{}{
-					"step_saat_ini": models.StepImplementasi,
-					"status":        models.StatusOnProgress,
-				})
+				Update("status", models.StatusOnProgress)
 
 		case "PERLU_TINDAKAN":
 			// Manager Operasional rejects the feedback
@@ -1087,14 +1091,11 @@ func AssignAdminProyek(c echo.Context) error {
 		})
 	}
 
-	// Pertama kali dipilih -> bikin 2 daily pengecekan sekaligus: Admin
-	// Proyek yang dipilih, dan Supervisi Finance Accounting.
-	financeSupervisor, err := models.FindSupervisiFinanceAccounting(tx)
-	if err != nil {
-		tx.Rollback()
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
-
+	// Pertama kali dipilih -> bikin daily pengecekan Admin Proyek DULU aja.
+	// Daily Finance & Admin Sekertaris (minta TTD Direktur) dibuat otomatis
+	// belakangan secara BERURUTAN lewat cascade (lihat activity_hooks.go:
+	// handlePengecekanAdminProyekDiterima, handlePengecekanFinanceDiterima),
+	// bukan sekaligus di sini.
 	activityAdminProyek := models.Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     body.PegawaiID,
@@ -1111,25 +1112,9 @@ func AssignAdminProyek(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily pengecekan Admin Proyek."})
 	}
 
-	activityFinance := models.Activity{
-		ID:            uuid.New().String(),
-		PegawaiID:     financeSupervisor.ID,
-		TerkaitPO:     &nomorPO,
-		Kategori:      models.KategoriDokumenPendukung,
-		Judul:         "Pengecekan Dokumen PO (Finance)",
-		Deskripsi:     "Cek kelengkapan PO customer & kesiapan data terkait penawaran " + nomorPO + " sebelum lanjut ke proses dokumen PO internal.",
-		WaktuMulai:    now,
-		TargetSelesai: deadline,
-		Status:        models.StatusOnProgress,
-	}
-	if err := tx.Create(&activityFinance).Error; err != nil {
-		tx.Rollback()
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily pengecekan Finance."})
-	}
-
 	logFollowUp := models.LogFollowUp{
 		Aksi:        "Pilih Admin Proyek",
-		Keterangan:  "Admin Proyek dipilih: " + pegawai.Nama + " oleh " + namaPegawai + ". Daily pengecekan dokumen PO dibuat untuk Admin Proyek dan Finance (" + financeSupervisor.Nama + ").",
+		Keterangan:  "Admin Proyek dipilih: " + pegawai.Nama + " oleh " + namaPegawai + ". Daily pengecekan dokumen PO dibuat untuk Admin Proyek (Finance & Admin Sekertaris menyusul setelah ini selesai).",
 		PegawaiID:   pegawaiID,
 		NamaPegawai: namaPegawai,
 		CreatedAt:   time.Now(),
@@ -1142,11 +1127,10 @@ func AssignAdminProyek(c echo.Context) error {
 	// type of parameter".
 	if err := tx.Model(&models.FollowUp{}).
 		Where("id = ?", body.FollowUpID).
-		Select("admin_proyek_id", "activity_pengecekan_admin_proyek_id", "activity_pengecekan_finance_id", "stage", "log_aktivitas").
+		Select("admin_proyek_id", "activity_pengecekan_admin_proyek_id", "stage", "log_aktivitas").
 		Updates(models.FollowUp{
 			AdminProyekID:                   &body.PegawaiID,
 			ActivityPengecekanAdminProyekID: &activityAdminProyek.ID,
-			ActivityPengecekanFinanceID:     &activityFinance.ID,
 			Stage:                           4,
 			LogAktivitas:                    followUp.LogAktivitas,
 		}).Error; err != nil {
@@ -1159,10 +1143,9 @@ func AssignAdminProyek(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message": "Admin Proyek berhasil ditugaskan, daily pengecekan dokumen PO dibuat untuk Admin Proyek & Finance.",
+		"message": "Admin Proyek berhasil ditugaskan, daily pengecekan dokumen PO dibuat untuk Admin Proyek.",
 		"data": map[string]interface{}{
 			"activityPengecekanAdminProyekId": activityAdminProyek.ID,
-			"activityPengecekanFinanceId":     activityFinance.ID,
 			"followUpId":                      followUp.ID,
 		},
 	})
@@ -1172,8 +1155,10 @@ func AssignAdminProyek(c echo.Context) error {
 // 3. Konfirmasi Dokumen PO oleh Direktur/Komisaris (Stage 5 -> 6)
 //    Gak pake daily -- mirip pola Persetujuan Manajemen. Kalau ACC, baru
 //    daily "Upload Dokumen PO" buat Admin Proyek dibuat. Kalau ditolak,
-//    balik ke Stage 4 dan 2 daily pengecekan direset ON_PROGRESS supaya
-//    Admin Proyek & Finance ngulang.
+//    balik ke Stage 4: daily Admin Proyek (yang pertama dalam rantai
+//    berurutan Admin Proyek -> Finance -> Admin Sekertaris) direset supaya
+//    diulang, daily Finance & Admin Sekertaris yang lama dilepas -- bakal
+//    dibuat ulang fresh oleh cascade begitu Admin Proyek selesai lagi.
 // ============================================
 func KonfirmasiDokumenPO(c echo.Context) error {
 	trackingID := c.Param("id")
@@ -1213,7 +1198,7 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 
 	if followUp.Stage != 5 {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Belum waktunya konfirmasi dokumen PO (dua daily pengecekan harus selesai dulu), atau sudah pernah dikonfirmasi.",
+			"error": "Belum waktunya konfirmasi dokumen PO (daily Admin Proyek, Finance, dan Admin Sekertaris harus selesai dulu berurutan), atau sudah pernah dikonfirmasi.",
 		})
 	}
 	if followUp.AdminProyekID == nil {
@@ -1269,6 +1254,14 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update Follow Up."})
 		}
 	} else {
+		// Ditolak -> balik ke Stage 4, tapi TETAP jaga urutan berurutan
+		// (Admin Proyek -> Finance -> Admin Sekertaris): cuma daily Admin
+		// Proyek (yang pertama) yang di-reset buat diulang. Daily Finance &
+		// Admin Sekertaris yang lama (kalau udah sempet kebuat) di-LEPAS
+		// referensinya dari FollowUp (bukan di-reset statusnya) supaya
+		// cascade bikin daily yang BARU & FRESH begitu Admin Proyek
+		// nyelesein ulang punya dia -- gak ngebiarin Finance/Admin
+		// Sekertaris ngerjain daily lama duluan di luar urutan.
 		now := time.Now()
 		newDeadline := now.Add(24 * time.Hour)
 
@@ -1283,29 +1276,21 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal reset daily pengecekan Admin Proyek."})
 			}
 		}
-		if followUp.ActivityPengecekanFinanceID != nil {
-			if err := tx.Model(&models.Activity{}).
-				Where("id = ?", *followUp.ActivityPengecekanFinanceID).
-				Updates(map[string]interface{}{
-					"status":         models.StatusOnProgress,
-					"target_selesai": newDeadline,
-				}).Error; err != nil {
-				tx.Rollback()
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal reset daily pengecekan Finance."})
-			}
-		}
 
 		followUp.LogAktivitas = append(followUp.LogAktivitas, models.LogFollowUp{
 			Aksi:        "Dokumen PO Ditolak",
-			Keterangan:  "Dokumen PO ditolak oleh " + namaPegawai + ". Alasan: " + body.Alasan + ". Admin Proyek & Finance perlu mengulang daily pengecekan.",
+			Keterangan:  "Dokumen PO ditolak oleh " + namaPegawai + ". Alasan: " + body.Alasan + ". Admin Proyek perlu mengulang daily pengecekan, lanjut lagi berurutan ke Finance & Admin Sekertaris.",
 			PegawaiID:   pegawaiID,
 			NamaPegawai: namaPegawai,
 			CreatedAt:   now,
 		})
 
+		// Select+Updates pakai STRUCT (bukan map) supaya serializer:json di
+		// log_aktivitas ke-apply -- Select tetep maksa 2 FK di-NULL-in
+		// walau zero-value-nya (nil) gak eksplisit ditulis di struct literal.
 		if err := tx.Model(&models.FollowUp{}).
 			Where("id = ?", followUp.ID).
-			Select("stage", "log_aktivitas").
+			Select("activity_pengecekan_finance_id", "activity_minta_ttd_direktur_id", "stage", "log_aktivitas").
 			Updates(models.FollowUp{
 				Stage:        4,
 				LogAktivitas: followUp.LogAktivitas,

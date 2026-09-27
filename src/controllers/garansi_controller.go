@@ -279,10 +279,14 @@ func UpdateTanggalKunjunganGaransi(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Garansi tidak ditemukan."})
 	}
 
-	// Tanggal kunjungan cuma bisa diubah selama daily bulan ini masih berjalan —
-	// begitu daily-nya disetujui selesai, tanggal terkunci.
-	if month.ActivitySelesai {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Daily bulan ini sudah selesai, tanggal kunjungan tidak bisa diubah lagi."})
+	// Approval daily & pengisian tanggal kunjungan boleh terjadi di urutan
+	// mana pun (lihat AdvanceGaransiIfReady). Tanggal baru dikunci begitu
+	// KEDUANYA sudah terpenuhi (month.Status == DITERIMA) — kalau cuma
+	// ActivitySelesai doang yang true (daily disetujui duluan, tanggal belum
+	// diisi), tanggal masih harus bisa diisi supaya bulan ini bisa lanjut/
+	// Garansi bisa tuntas.
+	if month.Status == models.StatusDiterima {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Bulan ini sudah tuntas, tanggal kunjungan tidak bisa diubah lagi."})
 	}
 
 	oldTanggal := month.TanggalKunjungan

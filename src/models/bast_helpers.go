@@ -56,8 +56,9 @@ func KodePerusahaanFromNama(nama string) string {
 //   UMUM: BAST-YYMM-XXX-###
 //   PAC : BAST-PAC-YYMM-XXX-###
 //   FIRE: BAST-FIR-YYMM-XXX-###
-// Nomor urut (###, 3 digit) reset per kombinasi kode+bulan+tahun+kategori —
-// dihitung dari BastEntry yang udah ada dengan prefix kode yang sama persis.
+// Nomor urut (###, 3 digit) GLOBAL per kombinasi bulan+tahun+kode perusahaan —
+// dibagi bareng antar kategori (PAC/FIRE/UMUM), gak reset sendiri-sendiri
+// per kategori lagi.
 func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string, tahun, bulan int) string {
 	prefix := "BAST"
 	switch kategori {
@@ -67,11 +68,17 @@ func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string,
 		prefix = "BAST-FIR"
 	}
 
-	base := fmt.Sprintf("%s-%02d%02d-%s", prefix, tahun%100, bulan, kodePerusahaan)
+	// Nomor urut (###) di belakang sekarang GLOBAL -- dibagi bareng antara
+	// PAC & FIRE (gak reset sendiri-sendiri per kategori lagi), tetep
+	// di-scope per bulan+perusahaan. Contoh urutan: BAST-PAC-...-001,
+	// BAST-FIR-...-002, BAST-PAC-...-003, dst -- lanjut nomor yang sama
+	// biarpun kategorinya beda-beda.
+	periodeKey := fmt.Sprintf("-%02d%02d-%s-", tahun%100, bulan, kodePerusahaan)
 
 	var count int64
-	tx.Model(&BastEntry{}).Where("no_referensi LIKE ?", base+"-%").Count(&count)
+	tx.Model(&BastEntry{}).Where("no_referensi LIKE ?", "%"+periodeKey+"%").Count(&count)
 
+	base := fmt.Sprintf("%s-%02d%02d-%s", prefix, tahun%100, bulan, kodePerusahaan)
 	return fmt.Sprintf("%s-%03d", base, count+1)
 }
 

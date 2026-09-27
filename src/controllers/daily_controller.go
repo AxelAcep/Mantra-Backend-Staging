@@ -817,12 +817,40 @@ func PengajuanSelesai(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Masih ada pengajuan reschedule yang menunggu konfirmasi."})
 	}
 
+	namaPegawai, _ := pegawaiMap["nama"].(string)
+
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		activity.Status = models.StatusKonfirmasiSelesai
 		activity.WaktuSubmit = &now
 		if err := tx.Save(&activity).Error; err != nil {
 			return err
+		}
+
+		// Kalau activity ini adalah Activity Sales punya sebuah FollowUp yang
+		// lagi Stage 2 (Menunggu Feedback Customer), mirror status submit ini
+		// ke FollowUp.Status juga -- kalau enggak, followUp.Status gak pernah
+		// jadi KONFIRMASI_SELESAI (AfterUpdate Activity cuma cascade pas status
+		// DITERIMA, bukan KONFIRMASI_SELESAI), jadi tombol ACC Manager
+		// Operasional di halaman Follow Up gak pernah muncul & Stage 2->3
+		// (buka pemilihan Admin Proyek) jadi macet permanen.
+		var followUp models.FollowUp
+		if errFU := tx.Where("activity_sales_id = ? AND stage = ?", activityID, 2).First(&followUp).Error; errFU == nil {
+			appendFollowUpLog(
+				&followUp,
+				"Feedback Customer Diajukan",
+				"Sales mengajukan konfirmasi bahwa feedback customer telah diterima. Menunggu persetujuan Manager Operasional.",
+				pegawaiID,
+				namaPegawai,
+			)
+			if err := tx.Model(&models.FollowUp{}).Where("id = ?", followUp.ID).
+				Select("status", "log_aktivitas").
+				Updates(models.FollowUp{
+					Status:       models.StatusKonfirmasiSelesai,
+					LogAktivitas: followUp.LogAktivitas,
+				}).Error; err != nil {
+				return err
+			}
 		}
 
 		// Notif ke semua Master
@@ -1035,14 +1063,16 @@ func KonfirmasiSelesai(c echo.Context) error {
 			if errFindSales == nil && followUp.Status == models.StatusDibatalkan {
 				fmt.Printf("DEBUG: FollowUp %s sudah DIBATALKAN, skip cascade Stage 2->3\n", followUp.ID)
 			} else if errFindSales == nil {
-				// PO diterima Sales -> BUKAN auto-assign Admin Proyek. Manager
-				// Operasional/Direktur/Komisaris harus milih Admin Proyek secara
-				// manual dulu lewat AssignAdminProyek (yang baru nge-bump Stage
-				// ke 3 setelah assignment beneran kejadi). Sebelumnya di sini
-				// auto-pick pegawai MAINTENANCE_PAC pertama & langsung Stage=3
-				// tanpa ada yang milih -> BAST/upload PO ke-unlock padahal Admin
-				// Proyek-nya belum ditentukan siapa.
+				// PO diterima Sales -> BUKAN auto-assign Admin Proyek, tapi Stage
+				// TETAP harus maju ke 3 di sini (bukan cuma nunggu endpoint
+				// UpdateStatusFollowUp status=SELESAI yang terpisah) -- soalnya
+				// daily Sales ini bisa juga disetujui lewat layar approval Daily
+				// yang generic (endpoint ini), bukan cuma lewat tombol "Setujui"
+				// di halaman Follow Up. Kalau Stage gak ikut maju di sini,
+				// dropdown pilih Admin Proyek (yang butuh Stage>=3) gak akan
+				// pernah kebuka walau daily-nya udah DITERIMA.
 				if followUp.Stage == 2 {
+					followUp.Stage = 3
 					logFollowUp := models.LogFollowUp{
 						Aksi:        "Feedback Customer Diterima",
 						Keterangan:  "Sales telah menerima feedback/PO dari klien. Menunggu Manager Operasional/Direktur/Komisaris menugaskan Admin Proyek.",
@@ -1051,7 +1081,13 @@ func KonfirmasiSelesai(c echo.Context) error {
 						CreatedAt:   time.Now(),
 					}
 					followUp.LogAktivitas = append(followUp.LogAktivitas, logFollowUp)
-					if errSave := tx.Omit("TrackingPenawaran", "Admin", "ActivityAdmin", "Sales", "ActivitySales", "ActivityAdminProyek", "Dokumen").Save(&followUp).Error; errSave != nil {
+					if errSave := tx.Model(&models.FollowUp{}).Where("id = ?", followUp.ID).
+						Select("stage", "status", "log_aktivitas").
+						Updates(models.FollowUp{
+							Stage:        3,
+							Status:       models.StatusOnProgress,
+							LogAktivitas: followUp.LogAktivitas,
+						}).Error; errSave != nil {
 						return fmt.Errorf("gagal menyimpan update FollowUp: %v", errSave)
 					}
 				}
