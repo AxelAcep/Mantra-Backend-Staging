@@ -700,13 +700,25 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		// dst baru dapet daily setelah entry sebelumnya DITERIMA
 		// (AdvanceBastEntryIfReady). PAC & FIRE jalan paralel satu sama
 		// lain, tapi masing-masing tetep urut sendiri-sendiri.
+		//
+		// Index bersifat GLOBAL per kategori — counter lanjut dari semua
+		// BastEntry yang sudah ada untuk kategori yang sama, bukan reset
+		// dari 1 tiap BAST baru. Contoh: BAST-PAC pertama punya entry
+		// 01,02,03 → BAST-PAC kedua lanjut 04,05.
+		var globalIndexBase int64
+		tx.Model(&BastEntry{}).
+			Joins(`JOIN "Bast" ON "Bast".id = "BastEntry".bast_id`).
+			Where(`"Bast".kategori = ?`, kategori).
+			Count(&globalIndexBase)
+
 		for i := 1; i <= jumlahBast; i++ {
 			noReferensi := GenerateBastKode(tx, kategori, kodePerusahaan, now.Year(), int(now.Month()))
 
+			entryIndex := int(globalIndexBase) + i
 			entry := BastEntry{
 				ID:          uuid.New().String(),
 				BastID:      bast.ID,
-				Index:       i,
+				Index:       entryIndex,
 				NoReferensi: noReferensi,
 				CreatedAt:   now,
 				UpdatedAt:   now,
