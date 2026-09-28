@@ -27,6 +27,8 @@ func UploadDokumen(c echo.Context) error {
 	}
 	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
 	pegawaiID, _ := pegawaiMap["id"].(string)
+	roleStr, _ := claims["role"].(string)
+	divisiStr, _ := pegawaiMap["divisi"].(string)
 
 	// Cek activity & status
 	var activity models.Activity
@@ -34,11 +36,18 @@ func UploadDokumen(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"message": "Activity tidak ditemukan"})
 	}
 
-	// Block jika status sudah selesai
+	// Block jika status sudah selesai (kecuali MASTER / MANAGER_OPERASIONAL /
+	// DIREKTUR / KOMISARIS — mereka boleh upload dokumen kapan saja)
 	if activity.Status == models.StatusDiterima || activity.Status == models.StatusDibatalkan {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"message": "Tidak dapat mengunggah file, aktivitas sudah selesai",
-		})
+		isPrivileged := roleStr == "MASTER" ||
+			divisiStr == string(models.DivisiManagerOperasional) ||
+			divisiStr == string(models.DivisiDirektur) ||
+			divisiStr == string(models.DivisiKomisaris)
+		if !isPrivileged {
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"message": "Tidak dapat mengunggah file, aktivitas sudah selesai",
+			})
+		}
 	}
 
 	// Parse multipart form secara eksplisit (max 10MB)
@@ -157,6 +166,15 @@ func DeleteDokumen(c echo.Context) error {
 	activityID := c.Param("id")
 	dokumenID := c.Param("dokumenId")
 
+	// Ambil claims
+	claims, ok := c.Get("user").(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
+	}
+	pegawaiMap, _ := claims["pegawai"].(map[string]interface{})
+	roleStr, _ := claims["role"].(string)
+	divisiStr, _ := pegawaiMap["divisi"].(string)
+
 	// Cek activity & status
 	var activity models.Activity
 	if err := config.DB.First(&activity, "id = ?", activityID).Error; err != nil {
@@ -164,9 +182,15 @@ func DeleteDokumen(c echo.Context) error {
 	}
 
 	if activity.Status == models.StatusDiterima || activity.Status == models.StatusDibatalkan {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"message": "Tidak dapat menghapus file, aktivitas sudah selesai",
-		})
+		isPrivileged := roleStr == "MASTER" ||
+			divisiStr == string(models.DivisiManagerOperasional) ||
+			divisiStr == string(models.DivisiDirektur) ||
+			divisiStr == string(models.DivisiKomisaris)
+		if !isPrivileged {
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"message": "Tidak dapat menghapus file, aktivitas sudah selesai",
+			})
+		}
 	}
 
 	// Cari dokumen
@@ -187,8 +211,7 @@ func DeleteDokumen(c echo.Context) error {
 	}
 
 	// Ambil claims dari token untuk notifikasi
-	claims, ok := c.Get("user").(jwt.MapClaims)
-	if ok {
+	if claims, ok := c.Get("user").(jwt.MapClaims); ok {
 		pegawaiMap, ok2 := claims["pegawai"].(map[string]interface{})
 		if ok2 {
 			pegawaiID, _ := pegawaiMap["id"].(string)
