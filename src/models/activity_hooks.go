@@ -701,24 +701,22 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 		// (AdvanceBastEntryIfReady). PAC & FIRE jalan paralel satu sama
 		// lain, tapi masing-masing tetep urut sendiri-sendiri.
 		//
-		// Index bersifat GLOBAL per kategori — counter lanjut dari semua
-		// BastEntry yang sudah ada untuk kategori yang sama, bukan reset
-		// dari 1 tiap BAST baru. Contoh: BAST-PAC pertama punya entry
-		// 01,02,03 → BAST-PAC kedua lanjut 04,05.
-		var globalIndexBase int64
-		tx.Model(&BastEntry{}).
-			Joins(`JOIN "Bast" ON "Bast".id = "BastEntry".bast_id`).
-			Where(`"Bast".kategori = ?`, kategori).
-			Count(&globalIndexBase)
-
+		// Index TETAP lokal per Bast (1, 2, 3, ... entry ke berapa dalam
+		// Bast INI) -- BUKAN global. Yang global itu NoReferensi (nomor
+		// referensi/kode BAST yang ditampilkan, lihat GenerateBastKode).
+		// Index dipakai buat nentuin urutan internal (entry berikutnya di
+		// AdvanceBastEntryIfReady) DAN buat nandain "entry pertama BAST ini"
+		// yang men-trigger pembuatan Garansi (handleBastEntryDiterima, cek
+		// entry.Index == 1) -- kalau Index dibikin global, entry pertama
+		// project ke-2/3/dst gak akan pernah index==1 lagi, dan Garansi gak
+		// akan pernah ke-trigger buat project itu.
 		for i := 1; i <= jumlahBast; i++ {
 			noReferensi := GenerateBastKode(tx, kategori, kodePerusahaan, now.Year(), int(now.Month()))
 
-			entryIndex := int(globalIndexBase) + i
 			entry := BastEntry{
 				ID:          uuid.New().String(),
 				BastID:      bast.ID,
-				Index:       entryIndex,
+				Index:       i,
 				NoReferensi: noReferensi,
 				CreatedAt:   now,
 				UpdatedAt:   now,
