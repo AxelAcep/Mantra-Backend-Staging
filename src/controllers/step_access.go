@@ -36,7 +36,7 @@ var stepAllowedDivisi = map[models.StepPenawaran][]string{
 	models.StepPenyusunanBoQ:        {"SALES", "ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT", "PRESALES"},
 	models.StepReviewInternal:       {"ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT"},
 	models.StepPersetujuanManajemen: {"ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT"},
-	models.StepFollowUp:             {"SALES", "ADMIN_SEKERTARIAT", "FINANCE_ACCOUNTING"},
+	models.StepFollowUp:             {"SALES", "ADMIN_SEKERTARIS", "ADMIN_SEKERTARIAT", "FINANCE_ACCOUNTING"},
 	models.StepImplementasi:         {"SALES", "PROCUREMENT_GA", "FINANCE_ACCOUNTING", "ADMIN_SEKERTARIAT"},
 	models.StepBAST:                 {"SALES", "FINANCE_ACCOUNTING"},
 	models.StepGaransi:              {"FINANCE_ACCOUNTING"},
