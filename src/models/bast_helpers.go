@@ -56,9 +56,9 @@ func KodePerusahaanFromNama(nama string) string {
 //   UMUM: BAST-YYMM-XXX-###
 //   PAC : BAST-PAC-YYMM-XXX-###
 //   FIRE: BAST-FIR-YYMM-XXX-###
-// Nomor urut (###, 3 digit) GLOBAL per kombinasi bulan+tahun+kode perusahaan —
-// dibagi bareng antar kategori (PAC/FIRE/UMUM), gak reset sendiri-sendiri
-// per kategori lagi.
+// Nomor urut (###, 3 digit) GLOBAL beneran — dibagi bareng antar kategori
+// (PAC/FIRE/UMUM), antar bulan/tahun, DAN antar penawaran/project. Gak
+// pernah reset lagi, pindah ke project lain pun nomornya lanjut terus.
 func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string, tahun, bulan int) string {
 	prefix := "BAST"
 	switch kategori {
@@ -68,15 +68,14 @@ func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string,
 		prefix = "BAST-FIR"
 	}
 
-	// Nomor urut (###) di belakang sekarang GLOBAL -- dibagi bareng antara
-	// PAC & FIRE (gak reset sendiri-sendiri per kategori lagi), tetep
-	// di-scope per bulan+perusahaan. Contoh urutan: BAST-PAC-...-001,
-	// BAST-FIR-...-002, BAST-PAC-...-003, dst -- lanjut nomor yang sama
-	// biarpun kategorinya beda-beda.
-	periodeKey := fmt.Sprintf("-%02d%02d-%s-", tahun%100, bulan, kodePerusahaan)
-
+	// Nomor urut (###) di belakang sekarang GLOBAL beneran -- dibagi bareng
+	// antar kategori (PAC/FIRE/UMUM), antar bulan/tahun, DAN antar
+	// perusahaan/project. Jadi biarpun ganti ke penawaran/project lain,
+	// nomornya tetep lanjut, gak pernah reset ke 001 lagi. Bagian
+	// bulan+tahun+kode perusahaan di kode/no. referensi cuma buat label,
+	// gak lagi nentuin scope hitungan.
 	var count int64
-	tx.Model(&BastEntry{}).Where("no_referensi LIKE ?", "%"+periodeKey+"%").Count(&count)
+	tx.Model(&BastEntry{}).Count(&count)
 
 	base := fmt.Sprintf("%s-%02d%02d-%s", prefix, tahun%100, bulan, kodePerusahaan)
 	return fmt.Sprintf("%s-%03d", base, count+1)
