@@ -306,10 +306,12 @@ type FollowUp struct {
 	Status              StatusActivity    `gorm:"not null;default:'ON_PROGRESS'"               json:"status"`
 	Stage               int               `gorm:"not null;default:1"                           json:"stage"`
 	TotalBAST           *int              `gorm:"index" json:"totalBast,omitempty"`
-	// Diisi kalau tracking-nya punya PAC & FIRE dua-duanya (2 Bast terpisah) —
-	// kalau cuma 1 kategori atau gak ada dua-duanya, tetap pakai TotalBAST di atas.
+	// Diisi kalau tracking-nya punya >1 kategori garansi (PAC/FIRE/BATTERY,
+	// maksimal 3 Bast terpisah) — kalau cuma 1 kategori atau gak ada
+	// kategorinya, tetap pakai TotalBAST di atas.
 	TotalBastPAC        *int              `gorm:"index" json:"totalBastPAC,omitempty"`
 	TotalBastFire       *int              `gorm:"index" json:"totalBastFire,omitempty"`
+	TotalBastBattery    *int              `gorm:"index" json:"totalBastBattery,omitempty"`
 	// Kondisi pengantaran barang: "SEBELUM_DP" atau "SESUDAH_DP".
 	// Jika SESUDAH_DP, pengantaran ditahan sampai termin 1 lunas di Accounting.
 	KondisiPengantaran  *string           `gorm:"size:20;default:null" json:"kondisiPengantaran,omitempty"`
@@ -405,9 +407,10 @@ type LogBast struct {
 type KategoriBast string
 
 const (
-	KategoriBastPAC  KategoriBast = "PAC"
-	KategoriBastFire KategoriBast = "FIRE"
-	KategoriBastUmum KategoriBast = "UMUM"
+	KategoriBastPAC     KategoriBast = "PAC"
+	KategoriBastFire    KategoriBast = "FIRE"
+	KategoriBastBattery KategoriBast = "BATTERY"
+	KategoriBastUmum    KategoriBast = "UMUM"
 )
 
 type Bast struct {

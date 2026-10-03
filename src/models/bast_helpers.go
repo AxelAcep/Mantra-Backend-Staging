@@ -9,21 +9,37 @@ import (
 	"gorm.io/gorm"
 )
 
-// DetectBastKategori nentuin BAST apa aja yang perlu dibuat buat satu
-// tracking, dilihat dari JenisPenawaran-nya. Cuma 2 hal yang dicek:
-// "PAC Montair" -> PAC, "Generator FirePro" -> FIRE. Item jenis penawaran
-// lain gak ngaruh sama sekali ke pembentukan BAST. Kalau dua-duanya ada,
-// hasilnya [PAC, FIRE] (2 Bast). Kalau gak ada dua-duanya, hasilnya
-// [UMUM] (1 Bast generik, kayak perilaku lama).
+// DetectBastKategori nentuin BAST/garansi kategori apa aja yang kebentuk
+// dari Jenis Penawaran tracking — 3 grup (sinkron sama frontend
+// utils/bast-kategori.ts):
+//   PAC    : PAC Montair, Chiller, AC Split/Standing  (garansi 12/2)
+//   FIRE   : Generator FirePro, Conventional Sys, Addressable Sys,
+//            Stand Alone/BTA                          (garansi firepro)
+//   BATTERY: Battery, UPS                             (garansi 4/2)
+// Bisa return 1–3 kategori. Kalau gak ada satupun yang kedetect -> [UMUM].
 func DetectBastKategori(jenisPenawaran []JenisPenawaran) []KategoriBast {
 	hasPAC := false
 	hasFire := false
+	hasBattery := false
 	for _, j := range jenisPenawaran {
+		norm := strings.ToLower(strings.TrimSpace(string(j)))
+		norm = strings.ReplaceAll(norm, "_", " ")
+		norm = strings.ReplaceAll(norm, "/", " ")
 		switch {
-		case strings.EqualFold(strings.TrimSpace(string(j)), "PAC Montair"):
+		case strings.Contains(norm, "pac montair"),
+			strings.Contains(norm, "chiller"),
+			strings.Contains(norm, "ac split"):
 			hasPAC = true
-		case strings.EqualFold(strings.TrimSpace(string(j)), "Generator FirePro"):
+		case strings.Contains(norm, "generator"),
+			strings.Contains(norm, "fire"),
+			strings.Contains(norm, "conventional"),
+			strings.Contains(norm, "addressable"),
+			strings.Contains(norm, "stand alone"),
+			strings.Contains(norm, "bta"):
 			hasFire = true
+		case strings.Contains(norm, "battery"),
+			strings.Contains(norm, "ups"):
+			hasBattery = true
 		}
 	}
 
@@ -33,6 +49,9 @@ func DetectBastKategori(jenisPenawaran []JenisPenawaran) []KategoriBast {
 	}
 	if hasFire {
 		kategori = append(kategori, KategoriBastFire)
+	}
+	if hasBattery {
+		kategori = append(kategori, KategoriBastBattery)
 	}
 	if len(kategori) == 0 {
 		kategori = append(kategori, KategoriBastUmum)
@@ -53,11 +72,12 @@ func KodePerusahaanFromNama(nama string) string {
 }
 
 // GenerateBastKode bikin kode/No. Referensi BAST otomatis, format:
-//   UMUM: BAST-YYMM-XXX-###
-//   PAC : BAST-PAC-YYMM-XXX-###
-//   FIRE: BAST-FIR-YYMM-XXX-###
+//   UMUM   : BAST-YYMM-XXX-###
+//   PAC    : BAST-PAC-YYMM-XXX-###
+//   FIRE   : BAST-FIR-YYMM-XXX-###
+//   BATTERY: BAST-BAT-YYMM-XXX-###
 // Nomor urut (###, 3 digit) GLOBAL beneran — dibagi bareng antar kategori
-// (PAC/FIRE/UMUM), antar bulan/tahun, DAN antar penawaran/project. Gak
+// (PAC/FIRE/BATTERY/UMUM), antar bulan/tahun, DAN antar penawaran/project. Gak
 // pernah reset lagi, pindah ke project lain pun nomornya lanjut terus.
 func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string, tahun, bulan int) string {
 	prefix := "BAST"
@@ -66,6 +86,8 @@ func GenerateBastKode(tx *gorm.DB, kategori KategoriBast, kodePerusahaan string,
 		prefix = "BAST-PAC"
 	case KategoriBastFire:
 		prefix = "BAST-FIR"
+	case KategoriBastBattery:
+		prefix = "BAST-BAT"
 	}
 
 	// Nomor urut (###) di belakang sekarang GLOBAL beneran -- dibagi bareng
@@ -106,10 +128,25 @@ func CreateBastEntryActivity(tx *gorm.DB, entry *BastEntry, picID string, katego
 		UpdatedAt:     now,
 	}
 
+	// TerkaitPO = Nomor Penawaran — resolve lewat Bast-nya supaya tampilan
+	// "Terkait" di detail daily activity konsisten + link /penawaran/{id}
+	// bisa dibuka langsung.
+	var bast Bast
+	trackingID := ""
+	if err := tx.First(&bast, "id = ?", entry.BastID).Error; err == nil {
+		trackingID = bast.TrackingPenawaranID
+	}
+	activity.TerkaitPO = nomorPenawaranTracking(tx, trackingID)
+
 	if err := tx.Create(&activity).Error; err != nil {
 		fmt.Println(">>> Gagal membuat Activity BastEntry:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 7 (target_hari_ini.md): Daily BAST (per kategori,
+	// per entry) ke Admin Proyek (pemilik) + MO. trackingID sudah di-resolve
+	// di atas lewat Bast-nya.
+	NotifTugasPengadaan(tx, &activity, trackingID, "")
 
 	entry.ActivityAdminProyekID = &activity.ID
 	if err := tx.Model(&BastEntry{}).Where("id = ?", entry.ID).

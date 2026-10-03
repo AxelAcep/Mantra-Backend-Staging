@@ -112,8 +112,12 @@ func GetNotifikasiList(c echo.Context) error {
 	var findQuery *gorm.DB
 
 	if filter == "penawaran" {
-		countQuery = config.DB.Model(&models.Notifikasi{}).Where("1 = 0")
-		findQuery = config.DB.Model(&models.Notifikasi{}).Where("1 = 0")
+		// Notifikasi tugas/proses pengadaan barang (tipe PENAWARAN) —
+		// dibuat oleh helper models.NotifTugasPengadaan/NotifPengadaanEvent.
+		countQuery = config.DB.Model(&models.Notifikasi{}).
+			Where(`"Notifikasi".pegawai_id = ? AND "Notifikasi".tipe = ?`, pegawaiID, models.NotifTipePengadaan)
+		findQuery = config.DB.Model(&models.Notifikasi{}).
+			Where(`"Notifikasi".pegawai_id = ? AND "Notifikasi".tipe = ?`, pegawaiID, models.NotifTipePengadaan)
 	} else {
 		countQuery = config.DB.Model(&models.Notifikasi{}).Where("\"Notifikasi\".pegawai_id = ?", pegawaiID)
 		findQuery = config.DB.Model(&models.Notifikasi{}).Where("\"Notifikasi\".pegawai_id = ?", pegawaiID)
@@ -168,7 +172,12 @@ func GetUnreadNotifikasiCount(c echo.Context) error {
 
 	var count int64
 	if filter == "penawaran" {
-		count = 0
+		// Notifikasi tugas pengadaan yang belum dibaca.
+		if err := config.DB.Model(&models.Notifikasi{}).
+			Where(`"Notifikasi".pegawai_id = ? AND "Notifikasi".is_read = false AND "Notifikasi".tipe = ?`, pegawaiID, models.NotifTipePengadaan).
+			Count(&count).Error; err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghitung unread notifikasi."})
+		}
 	} else if filter == "" || filter == "daily-activity" {
 		role, _ := claims["role"].(string)
 
@@ -190,6 +199,18 @@ func GetUnreadNotifikasiCount(c echo.Context) error {
 
 		if err := activityQuery.Count(&count).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghitung unread notifikasi."})
+		}
+
+		// Badge sidebar (filter kosong) juga menghitung notifikasi tugas
+		// pengadaan yang belum dibaca.
+		if filter == "" {
+			var penawaranUnread int64
+			if err := config.DB.Model(&models.Notifikasi{}).
+				Where(`"Notifikasi".pegawai_id = ? AND "Notifikasi".is_read = false AND "Notifikasi".tipe = ?`, pegawaiID, models.NotifTipePengadaan).
+				Count(&penawaranUnread).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal menghitung unread notifikasi."})
+			}
+			count += penawaranUnread
 		}
 	} else {
 		// Fallback default

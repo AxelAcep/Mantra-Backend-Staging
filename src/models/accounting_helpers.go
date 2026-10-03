@@ -50,6 +50,7 @@ func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, nomorPenawaran stri
 	activity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     pic.ID,
+		TerkaitPO:     &nomorPenawaran,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         fmt.Sprintf("Penagihan Termin %d - %s", item.Index, item.NamaTermin),
 		Deskripsi:     fmt.Sprintf("Activity otomatis penagihan termin pembayaran #%d (%s) untuk penawaran %s", item.Index, item.NamaTermin, nomorPenawaran),
@@ -64,6 +65,10 @@ func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, nomorPenawaran stri
 		fmt.Println(">>> Gagal membuat Activity Termin:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 9 (target_hari_ini.md): Daily penagihan termin (per
+	// termin) ke Kadiv Finance (pemilik) + MO.
+	NotifTugasPengadaan(tx, &activity, "", "")
 
 	item.ActivityID = &activity.ID
 	if err := tx.Model(&ItemTermin{}).Where("id = ?", item.ID).

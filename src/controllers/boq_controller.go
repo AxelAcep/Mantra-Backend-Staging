@@ -227,10 +227,11 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 
 		// Buat Daily Activity untuk Admin Sekertaris
 		activityAdminID := generateActivityID()
+		nomorPenawaranReview := tracking.NomorPenawaran
 		dailyAdmin := models.Activity{
 			ID:            activityAdminID,
 			PegawaiID:     adminPegawai.ID,
-			TerkaitPO:     tracking.NomorPO,
+			TerkaitPO:     &nomorPenawaranReview,
 			Perusahaan:    &namaPerusahaan,
 			Kategori:      models.KategoriQuotation,
 			Judul:         "Pengecekan Penawaran " + namaPerusahaan,
@@ -242,6 +243,31 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 		if err := config.DB.Create(&dailyAdmin).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
 		}
+
+		// Notifikasi Tahap 2→3 (target_hari_ini.md): Daily Pengecekan
+		// Penawaran ke Admin Sekertaris + MO.
+		models.NotifTugasPengadaan(config.DB, &dailyAdmin, trackingID, tracking.LokasiProyek)
+
+		// Notifikasi Tahap 3 (bug kasus 2): Review Internal dimulai —
+		// Kadiv Presales & Kadiv Sales (pelaku ACC manual) diingatkan ada
+		// persetujuan yang menunggu. Penerima dibatasi hanya akun role
+		// SUPERVISI di divisi tsb (FindSupervisiIDsByDivisi — semua akun
+		// kadiv, bukan cuma 1 seperti FindKadivDivisi yang bisa melewatkan
+		// akun saat diuji).
+		reviewInternalJudul := "Review Internal - " + namaPerusahaan
+		reviewInternalPesan := "Review Internal penawaran #" + tracking.NomorPenawaran + " menunggu persetujuan. Acc Admin Sekertaris & Manager Ops disetujui otomatis; Supervisi Sales melakukan ACC melalui menu Review Internal."
+		models.NotifPengadaanEvent(config.DB,
+			reviewInternalJudul, reviewInternalPesan,
+			trackingID, tracking.NomorPenawaran, namaPerusahaan, tracking.LokasiProyek,
+			nil,
+			models.FindSupervisiIDsByDivisi(config.DB, models.DivisiPresales)...,
+		)
+		models.NotifPengadaanEvent(config.DB,
+			reviewInternalJudul, reviewInternalPesan,
+			trackingID, tracking.NomorPenawaran, namaPerusahaan, tracking.LokasiProyek,
+			nil,
+			models.FindSupervisiIDsByDivisi(config.DB, models.DivisiSales)...,
+		)
 
 		// Buat atau update Review Internal
 		var existingReview models.ReviewInternal
@@ -584,10 +610,11 @@ func UpdateStatusBoQ(c echo.Context) error {
 
 			// Buat Daily Activity untuk Admin Sekertaris
 			activityAdminID := generateActivityID()
+			nomorPenawaranReview2 := tracking.NomorPenawaran
 			dailyAdmin := models.Activity{
 				ID:            activityAdminID,
 				PegawaiID:     adminPegawai.ID,
-				TerkaitPO:     tracking.NomorPO,
+				TerkaitPO:     &nomorPenawaranReview2,
 				Perusahaan:    &namaPerusahaan,
 				Kategori:      models.KategoriQuotation,
 				Judul:         "Pengecekan Penawaran " + namaPerusahaan,
@@ -599,6 +626,29 @@ func UpdateStatusBoQ(c echo.Context) error {
 			if err := config.DB.Create(&dailyAdmin).Error; err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
 			}
+
+			// Notifikasi Tahap 2→3 (target_hari_ini.md): Daily Pengecekan
+			// Penawaran ke Admin Sekertaris + MO.
+			models.NotifTugasPengadaan(config.DB, &dailyAdmin, trackingID, tracking.LokasiProyek)
+
+			// Notifikasi Tahap 3 (bug kasus 2): Review Internal dimulai —
+			// Kadiv Presales & Kadiv Sales (pelaku ACC manual) diingatkan
+			// ada persetujuan yang menunggu. Penerima dibatasi hanya akun
+			// role SUPERVISI di divisi tsb.
+			reviewInternalJudul2 := "Review Internal - " + namaPerusahaan
+			reviewInternalPesan2 := "Review Internal penawaran #" + tracking.NomorPenawaran + " menunggu persetujuan. Acc Admin Sekertaris & Manager Ops disetujui otomatis; Supervisi Sales melakukan ACC melalui menu Review Internal."
+			models.NotifPengadaanEvent(config.DB,
+				reviewInternalJudul2, reviewInternalPesan2,
+				trackingID, tracking.NomorPenawaran, namaPerusahaan, tracking.LokasiProyek,
+				nil,
+				models.FindSupervisiIDsByDivisi(config.DB, models.DivisiPresales)...,
+			)
+			models.NotifPengadaanEvent(config.DB,
+				reviewInternalJudul2, reviewInternalPesan2,
+				trackingID, tracking.NomorPenawaran, namaPerusahaan, tracking.LokasiProyek,
+				nil,
+				models.FindSupervisiIDsByDivisi(config.DB, models.DivisiSales)...,
+			)
 
 			// Buat atau update Review Internal
 			var existingReview models.ReviewInternal

@@ -104,15 +104,32 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 			namaPegawai,
 		)
 
+		var tracking models.TrackingPenawaran
+		config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID)
+
+		// Notifikasi Tahap 4 (target_hari_ini.md): Approval Direktur →
+		// MO + Admin Sekertaris. Dibuat SEBELUM step_saat_ini diupdate ke
+		// FOLLOW_UP supaya "Tahap Proses Pengadaan" tampil benar:
+		// "Persetujuan Manajemen" (bukan Follow Up).
+		var adminSekEvent models.Pegawai
+		adminSekID := ""
+		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminSekEvent).Error; err == nil {
+			adminSekID = adminSekEvent.ID
+		}
+		models.NotifPengadaanEvent(config.DB,
+			"Persetujuan Manajemen Disetujui - "+tracking.Perusahaan.Nama,
+			"Direktur/Komisaris menyetujui persetujuan manajemen penawaran #"+tracking.NomorPenawaran+". Proses lanjut ke Follow Up (pengiriman dokumen ke klien).",
+			trackingID, tracking.NomorPenawaran, tracking.Perusahaan.Nama, tracking.LokasiProyek,
+			persetujuan.ActivityAdminID,
+			adminSekID,
+		)
+
 		config.DB.Model(&models.TrackingPenawaran{}).
 			Where("id = ?", trackingID).
 			Updates(map[string]interface{}{
 				"step_saat_ini": models.StepFollowUp,
 				"status":        models.StatusOnProgress,
 			})
-
-		var tracking models.TrackingPenawaran
-		config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID)
 
 		// --- Backfill daily step 4 untuk Admin Sekertaris ---
 		// Daily pengingat approval kini dibuat otomatis saat tracking MASUK
@@ -209,6 +226,12 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 					UpdatedAt: time.Now(),
 				}
 				config.DB.Create(&followUp)
+
+				// Notifikasi Tahap 4→5 (target_hari_ini.md): Daily kirim
+				// dokumen ke Admin Sekertaris (pemilik) + MO. Sales TIDAK
+				// dinotifikasi di sini — Sales mendapat daily "Follow up
+				// Feedback" sendiri di stage 1→2.
+				models.NotifTugasPengadaan(config.DB, &dailyFollowUp, trackingID, tracking.LokasiProyek)
 			}
 		}
 
@@ -233,6 +256,24 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 		config.DB.Model(&models.TrackingPenawaran{}).
 			Where("id = ?", trackingID).
 			Update("status", models.StatusPerluTindakan)
+
+		// Notifikasi Tahap 4 (target_hari_ini.md): Ditolak Direktur →
+		// MO + Admin Sekertaris.
+		var trackingTolak models.TrackingPenawaran
+		if err := config.DB.Preload("Perusahaan").First(&trackingTolak, "id = ?", trackingID).Error; err == nil {
+			var adminSekTolak models.Pegawai
+			adminSekTolakID := ""
+			if errSek := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminSekTolak).Error; errSek == nil {
+				adminSekTolakID = adminSekTolak.ID
+			}
+			models.NotifPengadaanEvent(config.DB,
+				"Persetujuan Manajemen Ditolak - "+trackingTolak.Perusahaan.Nama,
+				"Direktur/Komisaris menolak persetujuan manajemen penawaran #"+trackingTolak.NomorPenawaran+". Alasan: "+body.Alasan+". Sales/Presales perlu konfirmasi ulang.",
+				trackingID, trackingTolak.NomorPenawaran, trackingTolak.Perusahaan.Nama, trackingTolak.LokasiProyek,
+				persetujuan.ActivityAdminID,
+				adminSekTolakID,
+			)
+		}
 
 	case "ON_PROGRESS":
 		if !isSalesPresalesSupervisi {

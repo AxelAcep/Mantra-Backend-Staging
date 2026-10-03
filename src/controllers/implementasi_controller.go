@@ -626,6 +626,10 @@ func AssignPGAStaff(c echo.Context) error {
 
 		if err := config.DB.Create(&childActivity).Error; err == nil {
 			assignedNames = append(assignedNames, staff.Nama)
+
+			// Notifikasi Tahap 6 (target_hari_ini.md): penugasan staff PGA
+			// ke staff terpilih + MO.
+			models.NotifTugasPengadaan(config.DB, &childActivity, trackingID, impl.TrackingPenawaran.LokasiProyek)
 		} else {
 			fmt.Println("Error creating child activity:", err)
 		}

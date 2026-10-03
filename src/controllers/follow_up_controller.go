@@ -369,9 +369,10 @@ func InputBASTFollowup(c echo.Context) error {
 	}
 
 	var body struct {
-		TotalBAST     *int `json:"total_bast"`
-		TotalBastPAC  *int `json:"total_bast_pac"`
-		TotalBastFire *int `json:"total_bast_fire"`
+		TotalBAST          *int `json:"total_bast"`
+		TotalBastPAC       *int `json:"total_bast_pac"`
+		TotalBastFire      *int `json:"total_bast_fire"`
+		TotalBastBattery   *int `json:"total_bast_battery"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid body."})
@@ -382,20 +383,24 @@ func InputBASTFollowup(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Tracking penawaran tidak ditemukan."})
 	}
 
-	// PAC & FIRE dua-duanya ada -> butuh 2 input terpisah. Kalau cuma salah
-	// satu (atau gak ada dua-duanya) -> tetap 1 input generik (total_bast),
-	// sama kayak sebelum ada pemisahan BAST.
-	dualKategori := len(models.DetectBastKategori(tracking.JenisPenawaran)) == 2
+	// Lebih dari 1 kategori garansi (PAC/FIRE/BATTERY, maksimal 3) -> butuh
+	// input terpisah per kategori. Kalau cuma 1 kategori (atau gak ada
+	// satupun) -> tetap 1 input generik (total_bast).
+	kategoriList := models.DetectBastKategori(tracking.JenisPenawaran)
+	multiKategori := len(kategoriList) > 1
 
-	if dualKategori {
-		if body.TotalBastPAC == nil && body.TotalBastFire == nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_pac atau total_bast_fire wajib diisi (minimal salah satu, tracking ini punya PAC & FIRE)."})
+	if multiKategori {
+		if body.TotalBastPAC == nil && body.TotalBastFire == nil && body.TotalBastBattery == nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_pac / total_bast_fire / total_bast_battery wajib diisi (minimal salah satu, tracking ini punya lebih dari 1 kategori garansi)."})
 		}
 		if body.TotalBastPAC != nil && *body.TotalBastPAC < 0 {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_pac tidak boleh negatif."})
 		}
 		if body.TotalBastFire != nil && *body.TotalBastFire < 0 {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_fire tidak boleh negatif."})
+		}
+		if body.TotalBastBattery != nil && *body.TotalBastBattery < 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "total_bast_battery tidak boleh negatif."})
 		}
 	} else {
 		if body.TotalBAST == nil {
@@ -437,7 +442,7 @@ func InputBASTFollowup(c echo.Context) error {
 	}
 
 	var changes []string
-	if dualKategori {
+	if multiKategori {
 		if body.TotalBastPAC != nil {
 			followUp.TotalBastPAC = body.TotalBastPAC
 			changes = append(changes, fmt.Sprintf("Total BAST PAC diperbarui menjadi %d", *body.TotalBastPAC))
@@ -445,6 +450,10 @@ func InputBASTFollowup(c echo.Context) error {
 		if body.TotalBastFire != nil {
 			followUp.TotalBastFire = body.TotalBastFire
 			changes = append(changes, fmt.Sprintf("Total BAST FIRE diperbarui menjadi %d", *body.TotalBastFire))
+		}
+		if body.TotalBastBattery != nil {
+			followUp.TotalBastBattery = body.TotalBastBattery
+			changes = append(changes, fmt.Sprintf("Total BAST BATTERY diperbarui menjadi %d", *body.TotalBastBattery))
 		}
 	} else {
 		followUp.TotalBAST = body.TotalBAST
@@ -780,10 +789,6 @@ func UploadDokumenFollowUp(c echo.Context) error {
 			//    create Activity Pembelian Barang untuk Supervisor PGA
 			activityPembelianID := uuid.NewString()
 
-			nomorPO := followUp.TrackingPenawaran.NomorPenawaran
-			if followUp.TrackingPenawaran.NomorPO != nil && *followUp.TrackingPenawaran.NomorPO != "" {
-				nomorPO = *followUp.TrackingPenawaran.NomorPO
-			}
 			var namaPerusahaan *string
 			if followUp.TrackingPenawaran.Perusahaan.Nama != "" {
 				namaPerusahaan = &followUp.TrackingPenawaran.Perusahaan.Nama
@@ -792,7 +797,7 @@ func UploadDokumenFollowUp(c echo.Context) error {
 			activityPembelian := models.Activity{
 				ID:            activityPembelianID,
 				PegawaiID:     pgaSupervisor.ID,
-				TerkaitPO:     &nomorPO,
+				TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
 				Perusahaan:    namaPerusahaan,
 				Kategori:      models.KategoriAkomodasiProject,
 				Judul:         "Pembelian Barang Implementasi",
@@ -809,6 +814,40 @@ func UploadDokumenFollowUp(c echo.Context) error {
 				return c.JSON(http.StatusInternalServerError, map[string]string{
 					"message": "Gagal membuat Activity Pembelian Barang: " + err.Error(),
 				})
+			}
+
+			// Notifikasi Tahap 6 (target_hari_ini.md): Daily pembelian barang
+			// ke Kadiv PGA (pemilik) + MO.
+			models.NotifTugasPengadaan(config.DB, &activityPembelian, followUp.TrackingPenawaranID, followUp.TrackingPenawaran.LokasiProyek)
+
+			// Notifikasi Tahap 6 (bug kasus 6): Admin Proyek diingatkan
+			// melengkapi No. PO, No. WO, dan Waktu Pengerjaan pada detail
+			// pengadaan (step Implementasi). Tidak ada daily untuk tugas
+			// ini, jadi notif event tanpa activity.
+			if followUp.AdminProyekID != nil {
+				models.NotifPengadaanEvent(config.DB,
+					"Lengkapi Data Order - "+followUp.TrackingPenawaran.Perusahaan.Nama,
+					"Lengkapi No. PO, No. WO, dan Waktu Pengerjaan pada detail pengadaan (step Implementasi) untuk penawaran #"+followUp.TrackingPenawaran.NomorPenawaran+".",
+					followUp.TrackingPenawaranID, followUp.TrackingPenawaran.NomorPenawaran,
+					followUp.TrackingPenawaran.Perusahaan.Nama, followUp.TrackingPenawaran.LokasiProyek,
+					nil,
+					*followUp.AdminProyekID,
+				)
+			}
+
+			// Notifikasi Tahap 6 (bug kasus 8): Supervisi Finance diingatkan
+			// menyiapkan termin pembayaran pada tahap Accounting. Tidak ada
+			// daily untuk tugas ini (termin daily dibuat saat accounting
+			// dikonfigurasi), jadi notif event tanpa activity.
+			if financeSup, errFin := models.FindSupervisiFinanceAccounting(config.DB); errFin == nil {
+				models.NotifPengadaanEvent(config.DB,
+					"Siapkan Termin Pembayaran - "+followUp.TrackingPenawaran.Perusahaan.Nama,
+					"Siapkan termin pembayaran pada tahap Accounting untuk pengadaan #"+followUp.TrackingPenawaran.NomorPenawaran+" — input termin & jadwal tagihan setelah data PO lengkap.",
+					followUp.TrackingPenawaranID, followUp.TrackingPenawaran.NomorPenawaran,
+					followUp.TrackingPenawaran.Perusahaan.Nama, followUp.TrackingPenawaran.LokasiProyek,
+					nil,
+					financeSup.ID,
+				)
 			}
 
 			// 3. Simpan ActivityPembelianID ke Implementasi
@@ -1099,7 +1138,7 @@ func AssignAdminProyek(c echo.Context) error {
 	activityAdminProyek := models.Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     body.PegawaiID,
-		TerkaitPO:     &nomorPO,
+		TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
 		Kategori:      models.KategoriDokumenPendukung,
 		Judul:         "Pengecekan Dokumen PO (Admin Proyek)",
 		Deskripsi:     "Cek kelengkapan PO customer & kesiapan data terkait penawaran " + nomorPO + " sebelum lanjut ke proses dokumen PO internal.",
@@ -1111,6 +1150,10 @@ func AssignAdminProyek(c echo.Context) error {
 		tx.Rollback()
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily pengecekan Admin Proyek."})
 	}
+
+	// Notifikasi Tahap 5 (target_hari_ini.md): proyek ke Admin Proyek yang
+	// terpilih (harian pengecekan dokumen PO) + MO.
+	models.NotifTugasPengadaan(tx, &activityAdminProyek, followUp.TrackingPenawaranID, "")
 
 	logFollowUp := models.LogFollowUp{
 		Aksi:        "Pilih Admin Proyek",
@@ -1220,7 +1263,7 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 		activityUploadPO := models.Activity{
 			ID:            uuid.New().String(),
 			PegawaiID:     *followUp.AdminProyekID,
-			TerkaitPO:     &nomorPO,
+			TerkaitPO:     &followUp.TrackingPenawaran.NomorPenawaran,
 			Kategori:      models.KategoriDokumenPendukung,
 			Judul:         "Upload Dokumen PO",
 			Deskripsi:     "Mengunggah Dokumen PO untuk PGA dan Finance terkait penawaran " + nomorPO,
@@ -1232,6 +1275,22 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 			tx.Rollback()
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily Upload Dokumen PO."})
 		}
+
+		// Notifikasi Tahap 5 (target_hari_ini.md): daily upload dokumen PO ke
+		// Admin Proyek (pemilik) + MO, dan approval direktur ke Admin Proyek,
+		// MO, Finance, serta Admin Sekertaris.
+		financeSupID := ""
+		if fs, errFS := models.FindSupervisiFinanceAccounting(tx); errFS == nil {
+			financeSupID = fs.ID
+		}
+		var adminSekUpd models.Pegawai
+		adminSekUpdID := ""
+		if errAS := tx.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminSekUpd).Error; errAS == nil {
+			adminSekUpdID = adminSekUpd.ID
+		}
+		models.NotifTugasPengadaan(tx, &activityUploadPO, trackingID, followUp.TrackingPenawaran.LokasiProyek,
+			financeSupID, adminSekUpdID,
+		)
 
 		followUp.LogAktivitas = append(followUp.LogAktivitas, models.LogFollowUp{
 			Aksi:        "Konfirmasi Dokumen PO",
@@ -1298,6 +1357,29 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 			tx.Rollback()
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal update Follow Up."})
 		}
+
+		// Notifikasi Tahap 5 (target_hari_ini.md): Ditolak Direktur ke
+		// Admin Proyek, MO, Finance, dan Admin Sekertaris.
+		nomorPOTolak := followUp.TrackingPenawaran.NomorPenawaran
+		if followUp.TrackingPenawaran.NomorPO != nil && *followUp.TrackingPenawaran.NomorPO != "" {
+			nomorPOTolak = *followUp.TrackingPenawaran.NomorPO
+		}
+		var financeTolakID string
+		if fs, errFS := models.FindSupervisiFinanceAccounting(tx); errFS == nil {
+			financeTolakID = fs.ID
+		}
+		var adminSekTolakFU models.Pegawai
+		adminSekTolakFUID := ""
+		if errAS := tx.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminSekTolakFU).Error; errAS == nil {
+			adminSekTolakFUID = adminSekTolakFU.ID
+		}
+		models.NotifPengadaanEvent(tx,
+			"Dokumen PO Ditolak - "+followUp.TrackingPenawaran.Perusahaan.Nama,
+			"Direktur/Komisaris menolak dokumen PO penawaran "+nomorPOTolak+". Alasan: "+body.Alasan+". Admin Proyek perlu mengulang pengecekan dokumen PO.",
+			trackingID, nomorPOTolak, followUp.TrackingPenawaran.Perusahaan.Nama, followUp.TrackingPenawaran.LokasiProyek,
+			followUp.ActivityPengecekanAdminProyekID,
+			*followUp.AdminProyekID, financeTolakID, adminSekTolakFUID,
+		)
 	}
 
 	if err := tx.Commit().Error; err != nil {

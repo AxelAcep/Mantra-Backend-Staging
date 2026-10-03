@@ -78,18 +78,30 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 	return nil
 }
 
-// followUpNomorPO ngambil nomor PO/penawaran punya tracking punya FollowUp
-// ini — dipakai di ketiga handler rantai pengecekan dokumen PO di bawah.
-func followUpNomorPO(tx *gorm.DB, followUp *FollowUp) (string, error) {
+// followUpNomorPenawaran ngambil NomorPenawaran punya tracking dari FollowUp
+// — dipakai buat Activity.TerkaitPO supaya tampilan "Terkait" di detail
+// daily activity konsisten menampilkan Nomor Penawaran dan link
+// /penawaran/{id} (resolve by nomor_penawaran) bisa jalan.
+func followUpNomorPenawaran(tx *gorm.DB, followUp *FollowUp) (string, error) {
 	var tracking TrackingPenawaran
 	if err := tx.Where("id = ?", followUp.TrackingPenawaranID).First(&tracking).Error; err != nil {
 		return "", err
 	}
-	nomorPO := tracking.NomorPenawaran
-	if tracking.NomorPO != nil && *tracking.NomorPO != "" {
-		nomorPO = *tracking.NomorPO
+	return tracking.NomorPenawaran, nil
+}
+
+// nomorPenawaranTracking mengembalikan pointer NomorPenawaran dari trackingID
+// untuk field Activity.TerkaitPO (nil bila tracking tidak ditemukan).
+func nomorPenawaranTracking(tx *gorm.DB, trackingID string) *string {
+	if trackingID == "" {
+		return nil
 	}
-	return nomorPO, nil
+	var tracking TrackingPenawaran
+	if err := tx.First(&tracking, "id = ?", trackingID).Error; err != nil {
+		return nil
+	}
+	nomor := tracking.NomorPenawaran
+	return &nomor
 }
 
 // ─── 1. Pengecekan Admin Proyek DITERIMA → buat daily pengecekan Finance ─────
@@ -124,7 +136,7 @@ func handlePengecekanAdminProyekDiterima(tx *gorm.DB, a *Activity) error {
 		namaPegawai = pegawai.Nama
 	}
 
-	nomorPO, err := followUpNomorPO(tx, &followUp)
+	nomorPO, err := followUpNomorPenawaran(tx, &followUp)
 	if err != nil {
 		fmt.Println(">>> Gagal ambil nomor PO:", err)
 		return err
@@ -148,6 +160,10 @@ func handlePengecekanAdminProyekDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> Gagal membuat daily pengecekan Finance:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 5 (target_hari_ini.md): Daily pengecekan dokumen PO
+	// ke Kadiv Finance + MO.
+	NotifTugasPengadaan(tx, &activityFinance, followUp.TrackingPenawaranID, "")
 
 	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
 		Aksi:        "Pengecekan Admin Proyek Selesai",
@@ -194,7 +210,7 @@ func handlePengecekanFinanceDiterima(tx *gorm.DB, a *Activity) error {
 		namaPegawai = pegawai.Nama
 	}
 
-	nomorPO, err := followUpNomorPO(tx, &followUp)
+	nomorPO, err := followUpNomorPenawaran(tx, &followUp)
 	if err != nil {
 		fmt.Println(">>> Gagal ambil nomor PO:", err)
 		return err
@@ -218,6 +234,10 @@ func handlePengecekanFinanceDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> Gagal membuat daily minta TTD Direktur:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 5 (target_hari_ini.md): Daily minta TTD Direktur ke
+	// Admin Sekertaris + MO.
+	NotifTugasPengadaan(tx, &activityTTD, followUp.TrackingPenawaranID, "")
 
 	followUp.LogAktivitas = append(followUp.LogAktivitas, LogFollowUp{
 		Aksi:        "Pengecekan Finance Selesai",
@@ -265,9 +285,28 @@ func handleMintaTTDDirekturDiterima(tx *gorm.DB, a *Activity) error {
 		CreatedAt:   time.Now(),
 	})
 
-	return tx.Model(&FollowUp{}).Where("id = ?", followUp.ID).
+	if err := tx.Model(&FollowUp{}).Where("id = ?", followUp.ID).
 		Select("stage", "log_aktivitas").
-		Updates(FollowUp{Stage: 5, LogAktivitas: followUp.LogAktivitas}).Error
+		Updates(FollowUp{Stage: 5, LogAktivitas: followUp.LogAktivitas}).Error; err != nil {
+		return err
+	}
+
+	// Notifikasi Tahap 5 (bug kasus 5): dokumen PO selesai diperiksa
+	// (Admin Proyek → Finance → Admin Sekertaris) dan menunggu konfirmasi
+	// Direktur/Komisaris — tidak ada daily untuk mereka, jadi notif event
+	// tanpa activity (link hanya ke proses pengadaan).
+	var trackingTTD TrackingPenawaran
+	if err := tx.Preload("Perusahaan").First(&trackingTTD, "id = ?", followUp.TrackingPenawaranID).Error; err == nil {
+		NotifPengadaanEvent(tx,
+			"Konfirmasi Dokumen PO Menunggu - "+trackingTTD.Perusahaan.Nama,
+			"Dokumen PO penawaran #"+trackingTTD.NomorPenawaran+" selesai diperiksa (Admin Proyek → Finance → Admin Sekertaris) dan menunggu konfirmasi Anda — ACC/Tolak melalui menu Follow Up (Konfirmasi Dokumen PO).",
+			followUp.TrackingPenawaranID, trackingTTD.NomorPenawaran, trackingTTD.Perusahaan.Nama, trackingTTD.LokasiProyek,
+			nil,
+			FindPegawaiIDsByDivisi(tx, DivisiDirektur, DivisiKomisaris)...,
+		)
+	}
+
+	return nil
 }
 
 // ─── Quotation → Review Internal (existing logic, dipisah biar rapi) ──────────
@@ -351,6 +390,23 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 		return err
 	}
 
+	// Notifikasi Tahap 3 (target_hari_ini.md): Review Internal selesai →
+	// Kadiv Sales + MO. Dibuat SEBELUM step_saat_ini diupdate supaya
+	// "Tahap Proses Pengadaan" tampil "Review Internal" (bukan
+	// Persetujuan Manajemen). Penerima kadiv dibatasi hanya akun role
+	// SUPERVISI di divisi SALES (FindSupervisiIDsByDivisi — semua akun).
+	var trackingEvent TrackingPenawaran
+	if err := tx.Preload("Perusahaan").First(&trackingEvent, "id = ?", review.TrackingPenawaranID).Error; err == nil {
+		namaPerusahaanEvent := trackingEvent.Perusahaan.Nama
+		NotifPengadaanEvent(tx,
+			"Review Internal Selesai - "+namaPerusahaanEvent,
+			"Review Internal penawaran #"+trackingEvent.NomorPenawaran+" telah disetujui (Admin Sekertaris, Manager Ops, Supervisi Sales). Proses lanjut ke Persetujuan Manajemen.",
+			review.TrackingPenawaranID, trackingEvent.NomorPenawaran, namaPerusahaanEvent, trackingEvent.LokasiProyek,
+			nil,
+			FindSupervisiIDsByDivisi(tx, DivisiSales)...,
+		)
+	}
+
 	// Update TrackingPenawaran ke step berikutnya
 	if err := tx.Model(&TrackingPenawaran{}).
 		Where("id = ?", review.TrackingPenawaranID).
@@ -416,10 +472,28 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 			return err
 		}
 
+		// Notifikasi Tahap 3→4: daily pengingat approval ke Admin
+		// Sekertaris (pemilik daily) + MO.
+		NotifTugasPengadaan(tx, &dailyAdmin, review.TrackingPenawaranID, tracking.LokasiProyek)
+
 		persetujuan.ActivityAdminID = &activityID
 		if err := tx.Save(&persetujuan).Error; err != nil {
 			return err
 		}
+	}
+
+	// Notifikasi Tahap 4 (bug kasus 5): approval Persetujuan Manajemen
+	// menunggu Direktur/Komisaris — tidak ada daily untuk mereka, jadi notif
+	// event tanpa activity (link hanya ke proses pengadaan). step_saat_ini
+	// sudah PERSETUJUAN_MANAJEMEN di atas → tahapan tampil benar.
+	if err := tx.Preload("Perusahaan").First(&trackingEvent, "id = ?", review.TrackingPenawaranID).Error; err == nil {
+		NotifPengadaanEvent(tx,
+			"Persetujuan Manajemen Menunggu Approval - "+trackingEvent.Perusahaan.Nama,
+			"Persetujuan Manajemen penawaran #"+trackingEvent.NomorPenawaran+" menunggu approval Anda — review dokumen lalu Approve/Tolak melalui menu Persetujuan Manajemen.",
+			review.TrackingPenawaranID, trackingEvent.NomorPenawaran, trackingEvent.Perusahaan.Nama, trackingEvent.LokasiProyek,
+			nil,
+			FindPegawaiIDsByDivisi(tx, DivisiDirektur, DivisiKomisaris)...,
+		)
 	}
 
 	return nil
@@ -462,10 +536,15 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		return nil
 	}
 
-	// Hold pengantaran jika kondisi SESUDAH_DP dan termin 1 belum lunas.
-	// Pengantaran baru dibuat otomatis setelah termin 1 ditandai lunas
-	// (lihat resume di handleItemTerminDiterima / BayarItemTermin).
+	// Hold pengantaran jika kondisi SESUDAH_DP. Logika: DEFAULT HOLD —
+	// pengantaran baru dibuat hanya jika termin 1 TERBUKTI lunas
+	// (ItemTermin index=1 SudahDibayar == true). Data termin yang belum ada
+	// (Finance belum membuat di accounting) TETAP dianggap BELUM lunas —
+	// jangan loloskan daily hanya karena query termin gagal. Release
+	// terjadi otomatis via ResumePengantaranHold saat termin 1 ditandai
+	// lunas (handleItemTerminDiterima / BayarItemTermin).
 	if followUp.KondisiPengantaran != nil && *followUp.KondisiPengantaran == "SESUDAH_DP" {
+		terminLunas := false
 		var termin TerminPembayaran
 		if errTermin := tx.
 			Where("tracking_penawaran_id = ?", impl.TrackingPenawaranID).
@@ -474,11 +553,12 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 			if errItem := tx.
 				Where("termin_pembayaran_id = ? AND index = ?", termin.ID, 1).
 				First(&itemTermin1).Error; errItem == nil {
-				if !itemTermin1.SudahDibayar {
-					fmt.Println(">>> Pengantaran di-HOLD: kondisi SESUDAH_DP, termin 1 belum lunas. Menunggu pembayaran DP.")
-					return nil
-				}
+				terminLunas = itemTermin1.SudahDibayar
 			}
+		}
+		if !terminLunas {
+			fmt.Println(">>> Pengantaran di-HOLD: kondisi SESUDAH_DP, termin 1 belum lunas (atau data termin belum dibuat Finance). Menunggu pembayaran DP.")
+			return nil
 		}
 	}
 
@@ -497,6 +577,7 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 	pengantaranActivity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     a.PegawaiID,
+		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity otomatis pengantaran barang untuk tahap Implementasi setelah pembelian barang diterima",
@@ -511,6 +592,10 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> Gagal membuat Activity Pengantaran:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 6 (target_hari_ini.md): Daily pengantaran ke Kadiv
+	// PGA (pemilik) + MO.
+	NotifTugasPengadaan(tx, &pengantaranActivity, impl.TrackingPenawaranID, "")
 
 	fmt.Println(">>> Activity Pengantaran dibuat:", pengantaranActivity.ID, "untuk pegawai:", pengantaranActivity.PegawaiID)
 
@@ -585,6 +670,7 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 	instalasiActivity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     adminProyekActivity.PegawaiID,
+		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Instalasi Barang Implementasi",
 		Deskripsi:     "Activity otomatis instalasi barang untuk tahap Implementasi setelah pengantaran barang diterima",
@@ -599,6 +685,10 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 		fmt.Println(">>> Gagal membuat Activity Instalasi:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 6 (target_hari_ini.md): Daily instalasi ke Admin
+	// Proyek (pemilik) + MO.
+	NotifTugasPengadaan(tx, &instalasiActivity, impl.TrackingPenawaranID, "")
 
 	fmt.Println(">>> Activity Instalasi dibuat:", instalasiActivity.ID, "untuk pegawai:", instalasiActivity.PegawaiID)
 
@@ -627,11 +717,11 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 }
 
 // ─── Activity Instalasi Barang DITERIMA → auto-buat BAST + Activity Admin Proyek ──
-// BAST dipecah berdasarkan JenisPenawaran tracking-nya: kalau ada "PAC Montair"
-// DAN "Generator FirePro" dua-duanya → 2 Bast terpisah (PAC + FIRE), masing-
-// masing jumlah entry-nya dari FollowUp.TotalBastPAC/TotalBastFire. Kalau
-// cuma salah satu atau gak ada dua-duanya → 1 Bast (kategori itu, atau UMUM),
-// jumlah entry dari field yang sesuai. Maksimal 2 Bast, gak pernah lebih.
+// BAST dipecah berdasarkan JenisPenawaran tracking-nya: tiap kategori garansi
+// (PAC/FIRE/BATTERY) yang kedetect dapet BAST terpisah, masing-masing jumlah
+// entry-nya dari FollowUp.TotalBastPAC/TotalBastFire/TotalBastBattery. Kalau
+// cuma 1 kategori atau gak ada satupun yang kedetect → 1 Bast (kategori itu,
+// atau UMUM), jumlah entry dari field generik TotalBAST. Maksimal 3 Bast.
 func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	// Cek apakah activity ini adalah "activity instalasi" milik sebuah Implementasi.
 	var impl Implementasi
@@ -681,11 +771,12 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	anyBastDibuat := false
-	// PAC & FIRE dua-duanya ada -> butuh 2 input terpisah (TotalBastPAC/Fire).
-	// Kalau cuma salah satu (atau gak ada dua-duanya) -> tetap pakai field
-	// generik TotalBAST, sama kayak sebelum ada pemisahan BAST — biar gak
-	// maksa isi 2 kotak input padahal cuma butuh 1 BAST.
-	dualKategori := len(kategoriList) == 2
+	// Lebih dari 1 kategori (PAC/FIRE/BATTERY, maksimal 3) -> input terpisah
+	// per kategori (TotalBastPAC/Fire/Battery). Kalau cuma 1 kategori (atau
+	// gak ada satupun) -> tetap pakai field generik TotalBAST, sama kayak
+	// sebelum ada pemisahan BAST — biar gak maksa isi banyak kotak input
+	// padahal cuma butuh 1 BAST.
+	multiKategori := len(kategoriList) > 1
 
 	for _, kategori := range kategoriList {
 		// Guard idempotency per kategori: kalau Bast kategori ini buat tracking
@@ -698,12 +789,14 @@ func handleInstalasiBarangDiterima(tx *gorm.DB, a *Activity) error {
 
 		var jumlahBastPtr *int
 		switch {
-		case !dualKategori:
+		case !multiKategori:
 			jumlahBastPtr = followUp.TotalBAST
 		case kategori == KategoriBastPAC:
 			jumlahBastPtr = followUp.TotalBastPAC
 		case kategori == KategoriBastFire:
 			jumlahBastPtr = followUp.TotalBastFire
+		case kategori == KategoriBastBattery:
+			jumlahBastPtr = followUp.TotalBastBattery
 		}
 
 		if jumlahBastPtr == nil || *jumlahBastPtr <= 0 {
@@ -894,8 +987,8 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	// Guard idempotency Garansi — di-scope per (tracking, kategori) karena
-	// satu tracking bisa punya sampai 2 Garansi (PAC & FIRE), masing-masing
-	// dipicu Bast kategorinya sendiri-sendiri.
+	// satu tracking bisa punya sampai 3 Garansi (PAC/FIRE/BATTERY),
+	// masing-masing dipicu Bast kategorinya sendiri-sendiri.
 	var existingGaransi Garansi
 	if tx.Where("tracking_penawaran_id = ? AND kategori_bast = ?", bast.TrackingPenawaranID, bast.Kategori).First(&existingGaransi).Error == nil {
 		fmt.Println(">>> Garansi kategori", bast.Kategori, "sudah ada, skip:", existingGaransi.ID)
@@ -937,6 +1030,21 @@ func handleBastEntryDiterima(tx *gorm.DB, a *Activity) error {
 		}).Error; err != nil {
 		fmt.Println(">>> Gagal update TrackingPenawaran step Garansi:", err)
 		return err
+	}
+
+	// Notifikasi Tahap 8 (bug kasus 7): Admin Proyek (PIC garansi)
+	// diingatkan mengonfigurasi garansi — pilih kategori dalam/luar kota,
+	// lama tahun, dan bulan/tahun mulai. Tidak ada daily sampai garansi
+	// dikonfigurasi, jadi notif event tanpa activity.
+	var trackingGaransi TrackingPenawaran
+	if err := tx.Preload("Perusahaan").First(&trackingGaransi, "id = ?", bast.TrackingPenawaranID).Error; err == nil {
+		NotifPengadaanEvent(tx,
+			"Konfigurasi Garansi - "+trackingGaransi.Perusahaan.Nama,
+			"Konfigurasi garansi penawaran #"+trackingGaransi.NomorPenawaran+" — pilih kategori dalam/luar kota, lama tahun, dan bulan/tahun mulai pada menu Garansi (step 8).",
+			bast.TrackingPenawaranID, trackingGaransi.NomorPenawaran, trackingGaransi.Perusahaan.Nama, trackingGaransi.LokasiProyek,
+			nil,
+			picID,
+		)
 	}
 
 	return nil
@@ -1040,6 +1148,7 @@ func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) 
 	pengantaranActivity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     pembelianActivity.PegawaiID,
+		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity pengantaran barang (dilanjutkan setelah termin 1 DP lunas)",
@@ -1054,6 +1163,10 @@ func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) 
 		fmt.Println(">>> ResumePengantaranHold: Gagal membuat Activity Pengantaran:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 6 (target_hari_ini.md): Daily pengantaran (resume
+	// setelah DP lunas) ke Kadiv PGA (pemilik) + MO.
+	NotifTugasPengadaan(tx, &pengantaranActivity, impl.TrackingPenawaranID, "")
 
 	fmt.Println(">>> ResumePengantaranHold: Activity Pengantaran dibuat:", pengantaranActivity.ID)
 

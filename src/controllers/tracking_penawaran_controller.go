@@ -130,6 +130,17 @@ func CreateTrackingPenawaran(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal membuat activity"})
 	}
 
+	// Notifikasi Tahap 1 (target_hari_ini.md): Daily Sales ke Kadiv Sales +
+	// MO setelah request penawaran dibuat. Sales sendiri tidak dinotifikasi
+	// (mereka yang membuat request).
+	models.NotifPengadaanEvent(tx,
+		"Permintaan Penawaran Baru - "+perusahaan.Nama,
+		"Sales membuat request penawaran #"+nomorPenawaran+". Periksa dan lanjutkan proses pengadaan barang.",
+		trackingID, nomorPenawaran, perusahaan.Nama, req.LokasiProyek,
+		&activityID,
+		models.FindKadivDivisi(tx, models.DivisiSales),
+	)
+
 	permintaanID := uuid.NewString()
 	permintaan := models.PermintaanMasuk{
 		ID:                  permintaanID,
@@ -331,10 +342,11 @@ func AssignPreSales(c echo.Context) error {
 	if !boqExists {
 		// Buat activity BoQ
 		activityBoqID := generateActivityID()
+		nomorPenawaranBoq := permintaanMasuk.TrackingPenawaran.NomorPenawaran
 		dailyBoq := models.Activity{
 			ID:            activityBoqID,
 			PegawaiID:     body.PreSalesID,
-			TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+			TerkaitPO:     &nomorPenawaranBoq,
 			Perusahaan:    &namaPerusahaan,
 			Kategori:      models.KategoriBillOfQuantity,
 			Judul:         "Pembuatan BOQ " + namaPerusahaan,
@@ -346,6 +358,24 @@ func AssignPreSales(c echo.Context) error {
 		if err := config.DB.Create(&dailyBoq).Error; err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity BoQ."})
 		}
+
+		// Notifikasi Tahap 1: Daily Presales ke PreSales terpilih + Kadiv +
+		// MO setelah di-assign.
+		models.NotifTugasPengadaan(config.DB, &dailyBoq, trackingID, permintaanMasuk.TrackingPenawaran.LokasiProyek,
+			models.FindKadivDivisi(config.DB, models.DivisiSales),
+		)
+
+		// Notifikasi Tahap 2 (bug kasus 1): Admin Sekertaris diingatkan
+		// mengisi harga/subtotal pada BoQ (tahap Penyusunan BOQ) — tidak ada
+		// daily untuk tugas ini, jadi notif event tanpa activity.
+		models.NotifPengadaanEvent(config.DB,
+			"Pengisian Harga BoQ - "+permintaanMasuk.TrackingPenawaran.Perusahaan.Nama,
+			"Lengkapi harga/subtotal pada BoQ penawaran #"+permintaanMasuk.TrackingPenawaran.NomorPenawaran+" (tahap Penyusunan BOQ).",
+			trackingID, permintaanMasuk.TrackingPenawaran.NomorPenawaran,
+			permintaanMasuk.TrackingPenawaran.Perusahaan.Nama, permintaanMasuk.TrackingPenawaran.LokasiProyek,
+			nil,
+			models.FindPegawaiIDsByDivisi(config.DB, models.DivisiAdminSekertaris)...,
+		)
 
 		// Buat BoQ, link ke activity
 		boq := models.PenyusunanBoQ{
@@ -385,6 +415,15 @@ func AssignPreSales(c echo.Context) error {
 			config.DB.Model(&models.Activity{}).
 				Where("id = ?", *existingBoQ.ActivityID).
 				Update("pegawai_id", body.PreSalesID)
+
+			// Notifikasi Tahap 1: PreSales baru menerima daily BoQ yang
+			// dialihkan + Kadiv + MO.
+			var dailyBoqAkt models.Activity
+			if errAmbil := config.DB.First(&dailyBoqAkt, "id = ?", *existingBoQ.ActivityID).Error; errAmbil == nil {
+				models.NotifTugasPengadaan(config.DB, &dailyBoqAkt, trackingID, permintaanMasuk.TrackingPenawaran.LokasiProyek,
+					models.FindKadivDivisi(config.DB, models.DivisiSales),
+				)
+			}
 		}
 
 		existingBoQ.PembuatID = &body.PreSalesID
@@ -495,10 +534,11 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 
 				// Buat activity dulu, simpan ID-nya
 				activityID := generateActivityID()
+				nomorPenawaranBoq2 := permintaanMasuk.TrackingPenawaran.NomorPenawaran
 				dailyBoq := models.Activity{
 					ID:            activityID,
 					PegawaiID:     *permintaanMasuk.PreSalesID,
-					TerkaitPO:     permintaanMasuk.TrackingPenawaran.NomorPO,
+					TerkaitPO:     &nomorPenawaranBoq2,
 					Perusahaan:    &namaPerusahaan,
 					Kategori:      models.KategoriBillOfQuantity,
 					Judul:         "Pembuatan BOQ " + namaPerusahaan,
@@ -510,6 +550,22 @@ func UpdateStatusPermintaanMasuk(c echo.Context) error {
 				if err := config.DB.Create(&dailyBoq).Error; err != nil {
 					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat activity."})
 				}
+
+				// Notifikasi Tahap 1: Daily BoQ ke PreSales + Kadiv Sales + MO.
+				models.NotifTugasPengadaan(config.DB, &dailyBoq, trackingID, permintaanMasuk.TrackingPenawaran.LokasiProyek,
+					models.FindKadivDivisi(config.DB, models.DivisiSales),
+				)
+
+				// Notifikasi Tahap 2 (bug kasus 1): Admin Sekertaris diingatkan
+				// mengisi harga/subtotal pada BoQ (tahap Penyusunan BOQ).
+				models.NotifPengadaanEvent(config.DB,
+					"Pengisian Harga BoQ - "+permintaanMasuk.TrackingPenawaran.Perusahaan.Nama,
+					"Lengkapi harga/subtotal pada BoQ penawaran #"+permintaanMasuk.TrackingPenawaran.NomorPenawaran+" (tahap Penyusunan BOQ).",
+					trackingID, permintaanMasuk.TrackingPenawaran.NomorPenawaran,
+					permintaanMasuk.TrackingPenawaran.Perusahaan.Nama, permintaanMasuk.TrackingPenawaran.LokasiProyek,
+					nil,
+					models.FindPegawaiIDsByDivisi(config.DB, models.DivisiAdminSekertaris)...,
+				)
 
 				// Baru buat BoQ, link ke activity
 				boq := models.PenyusunanBoQ{
@@ -1247,11 +1303,16 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 // FirePro") ke KategoriBast ("PAC" / "FIRE") buat filtering per-garansi.
 func mapJenisToKategoriBast(jenis string) string {
 	lower := strings.ToLower(jenis)
-	if strings.Contains(lower, "pac") {
+	if strings.Contains(lower, "pac") || strings.Contains(lower, "chiller") || strings.Contains(lower, "ac split") {
 		return string(models.KategoriBastPAC)
 	}
-	if strings.Contains(lower, "fire") || strings.Contains(lower, "generator") {
+	if strings.Contains(lower, "fire") || strings.Contains(lower, "generator") ||
+		strings.Contains(lower, "conventional") || strings.Contains(lower, "addressable") ||
+		strings.Contains(lower, "stand alone") || strings.Contains(lower, "bta") {
 		return string(models.KategoriBastFire)
+	}
+	if strings.Contains(lower, "battery") || strings.Contains(lower, "ups") {
+		return string(models.KategoriBastBattery)
 	}
 	return ""
 }

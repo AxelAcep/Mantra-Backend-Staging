@@ -25,6 +25,9 @@ const (
 	KategoriPACLuarKota   KategoriGaransi = "PAC_LUAR_KOTA"
 	KategoriFireDalamKota KategoriGaransi = "FIRE_DALAM_KOTA"
 	KategoriFireLuarKota  KategoriGaransi = "FIRE_LUAR_KOTA"
+	// Battery/UPS — periode 4x setahun dalam kota, 2x setahun luar kota.
+	KategoriBatteryDalamKota KategoriGaransi = "BATTERY_DALAM_KOTA"
+	KategoriBatteryLuarKota  KategoriGaransi = "BATTERY_LUAR_KOTA"
 	// KategoriUmum dipakai kalau Bast pemicunya UMUM (gak ada PAC/FIRE
 	// kedetect dari Jenis Penawaran) — garansi bulanan biasa, gak ada
 	// pembedaan dalam/luar kota.
@@ -43,6 +46,8 @@ func AllowedKategoriGaransi(kategoriBast KategoriBast) []KategoriGaransi {
 		return []KategoriGaransi{KategoriPACDalamKota, KategoriPACLuarKota, KategoriTidakAda}
 	case KategoriBastFire:
 		return []KategoriGaransi{KategoriFireDalamKota, KategoriFireLuarKota, KategoriTidakAda}
+	case KategoriBastBattery:
+		return []KategoriGaransi{KategoriBatteryDalamKota, KategoriBatteryLuarKota, KategoriTidakAda}
 	default: // UMUM
 		return []KategoriGaransi{KategoriUmum, KategoriTidakAda}
 	}
@@ -144,6 +149,11 @@ func KategoriSlotPattern(kategori KategoriGaransi) (kunjunganPerTahun int, bulan
 		return 4, []int{1, 4, 7, 10}
 	case KategoriFireLuarKota:
 		return 2, []int{1, 7}
+	// Battery/UPS — 4x setahun dalam kota, 2x setahun luar kota.
+	case KategoriBatteryDalamKota:
+		return 4, []int{1, 4, 7, 10}
+	case KategoriBatteryLuarKota:
+		return 2, []int{1, 7}
 	case KategoriUmum:
 		return 12, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	default:
@@ -175,9 +185,18 @@ func CreateGaransiMonthActivity(tx *gorm.DB, month *GaransiMonth, picID, pegawai
 	now := time.Now()
 	deadline := lastDayOfGaransiMonth(month.Tahun, month.Bulan)
 
+	// Resolve Garansi dulu — dipakai buat TerkaitPO (Nomor Penawaran) dan
+	// notifikasi di bawah.
+	var garansiForNotif Garansi
+	trackingIDGaransi := ""
+	if err := tx.First(&garansiForNotif, "id = ?", month.GaransiID).Error; err == nil {
+		trackingIDGaransi = garansiForNotif.TrackingPenawaranID
+	}
+
 	activity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     picID,
+		TerkaitPO:     nomorPenawaranTracking(tx, trackingIDGaransi),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         fmt.Sprintf("Kunjungan Garansi Bulan ke-%d", month.BulanKe),
 		Deskripsi:     fmt.Sprintf("Activity otomatis kunjungan garansi bulan ke-%d (%s %d)", month.BulanKe, namaBulanIndo(month.Bulan), month.Tahun),
@@ -192,6 +211,10 @@ func CreateGaransiMonthActivity(tx *gorm.DB, month *GaransiMonth, picID, pegawai
 		fmt.Println(">>> Gagal membuat Activity Garansi bulan ke-", month.BulanKe, ":", err)
 		return err
 	}
+
+	// Notifikasi Tahap 8 (target_hari_ini.md): Daily garansi (per bulan, per
+	// kategori) ke Admin Proyek (pemilik) + MO.
+	NotifTugasPengadaan(tx, &activity, trackingIDGaransi, "")
 
 	month.ActivityID = &activity.ID
 	month.Status = StatusOnProgress
@@ -291,6 +314,7 @@ func CreatePenawaranMaintenanceActivity(tx *gorm.DB, garansi *Garansi, pegawaiID
 	activity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     adminProyekActivity.PegawaiID,
+		TerkaitPO:     nomorPenawaranTracking(tx, garansi.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         fmt.Sprintf("Penawaran Maintenance%s ke Customer", kategoriLabel),
 		Deskripsi:     "Activity otomatis setelah masa garansi tuntas — tawarkan kontrak maintenance ke customer.",
@@ -304,6 +328,10 @@ func CreatePenawaranMaintenanceActivity(tx *gorm.DB, garansi *Garansi, pegawaiID
 		fmt.Println(">>> Gagal membuat Activity Penawaran Maintenance:", err)
 		return err
 	}
+
+	// Notifikasi Tahap 8 (target_hari_ini.md): Daily penawaran maintenance
+	// ke Admin Proyek (pemilik) + MO.
+	NotifTugasPengadaan(tx, &activity, garansi.TrackingPenawaranID, "")
 
 	garansi.LogAktivitas = append(garansi.LogAktivitas, LogGaransi{
 		Aksi:        "Buat Daily Penawaran Maintenance",

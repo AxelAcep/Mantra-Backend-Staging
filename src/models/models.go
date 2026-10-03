@@ -199,6 +199,15 @@ type Notifikasi struct {
 	Pesan      string    `gorm:"not null" json:"pesan"`
 	IsRead     bool      `gorm:"default:false;not null;index" json:"isRead"` // + index: filter unread notif
 	CreatedAt  time.Time `gorm:"index" json:"createdAt"`                     // + index: sort notif terbaru
+
+	// Konteks proses pengadaan barang (tipe PENAWARAN) — untuk tampilan
+	// notifikasi: Nomor PO, Perusahaan, Lokasi Proyek + link detail.
+	TerkaitPO           string `gorm:"index" json:"terkaitPO,omitempty"`
+	Perusahaan          string `json:"perusahaan,omitempty"`
+	LokasiProyek        string `json:"lokasiProyek,omitempty"`
+	TrackingPenawaranID string `gorm:"index" json:"trackingPenawaranId,omitempty"` // link /penawaran/{id}
+	Tahapan             string `json:"tahapan,omitempty"`                          // label tahap proses pengadaan saat notif dibuat
+	Tipe                string `gorm:"default:'DAILY_ACTIVITY';index" json:"tipe"` // DAILY_ACTIVITY | PENAWARAN
 }
 
 type Perusahaan struct {

@@ -1037,6 +1037,10 @@ func KonfirmasiSelesai(c echo.Context) error {
 						return fmt.Errorf("gagal membuat daily activity sales: %v", errCreateSales)
 					}
 
+					// Notifikasi Tahap 5 (target_hari_ini.md): Daily follow up
+					// feedback ke Staf Sales + MO.
+					models.NotifTugasPengadaan(tx, &dailySales, followUp.TrackingPenawaranID, followUp.TrackingPenawaran.LokasiProyek)
+
 					followUp.Stage = 2
 					followUp.ActivitySalesID = &activitySalesID
 
