@@ -361,10 +361,13 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 		return err
 	}
 
-	// Buat Persetujuan Manajemen
-	var existing PersetujuanManajemen
-	if tx.Where("tracking_penawaran_id = ?", review.TrackingPenawaranID).First(&existing).Error != nil {
-		persetujuan := PersetujuanManajemen{
+	// Buat Persetujuan Manajemen + daily pengingat untuk Admin Sekertaris.
+	// Daily dibuat SEKARANG (begitu masuk step 4), bukan setelah direktur
+	// approve — karena fungsinya mengingatkan Direktur/Komisaris untuk
+	// melakukan approval dan mengunggah dokumen yang sudah ditandatangani.
+	var persetujuan PersetujuanManajemen
+	if err := tx.Where("tracking_penawaran_id = ?", review.TrackingPenawaranID).First(&persetujuan).Error; err != nil {
+		persetujuan = PersetujuanManajemen{
 			ID:                   uuid.New().String(),
 			TrackingPenawaranID:  review.TrackingPenawaranID,
 			AccDirekturKomisaris: false,
@@ -373,6 +376,48 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 			UpdatedAt:            time.Now(),
 		}
 		if err := tx.Create(&persetujuan).Error; err != nil {
+			return err
+		}
+	}
+
+	if persetujuan.ActivityAdminID == nil {
+		var tracking TrackingPenawaran
+		if err := tx.Preload("Perusahaan").First(&tracking, "id = ?", review.TrackingPenawaranID).Error; err != nil {
+			return err
+		}
+
+		var adminSekertaris Pegawai
+		adminID := pegawaiID
+		if err := tx.Where("divisi = ?", DivisiAdminSekertaris).First(&adminSekertaris).Error; err == nil {
+			adminID = adminSekertaris.ID
+		}
+
+		now := time.Now()
+		deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
+		if now.After(deadline) {
+			deadline = deadline.Add(24 * time.Hour)
+		}
+
+		namaPerusahaan := tracking.Perusahaan.Nama
+		activityID := uuid.New().String()
+		dailyAdmin := Activity{
+			ID:            activityID,
+			PegawaiID:     adminID,
+			TerkaitPO:     &tracking.NomorPenawaran,
+			Perusahaan:    &namaPerusahaan,
+			Kategori:      KategoriQuotation,
+			Judul:         "Pengecekan Persetujuan Manajemen - " + namaPerusahaan,
+			Deskripsi:     "Activity otomatis saat pengadaan masuk tahap Persetujuan Manajemen. Mengingatkan Direktur/Komisaris untuk melakukan approval dan mengunggah dokumen yang sudah ditandatangani untuk penawaran #" + tracking.NomorPenawaran,
+			WaktuMulai:    now,
+			TargetSelesai: deadline,
+			Status:        StatusOnProgress,
+		}
+		if err := tx.Create(&dailyAdmin).Error; err != nil {
+			return err
+		}
+
+		persetujuan.ActivityAdminID = &activityID
+		if err := tx.Save(&persetujuan).Error; err != nil {
 			return err
 		}
 	}

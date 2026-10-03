@@ -170,7 +170,7 @@ func GetDetailImplementasi(c echo.Context) error {
 func UpdateDetailImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "Unauthorized.",
@@ -197,6 +197,24 @@ func UpdateDetailImplementasi(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"error": "Data Implementasi tidak ditemukan.",
+		})
+	}
+
+	// Hak ubah No. WO hanya untuk Master atau Admin Proyek (MAINTENANCE_PAC / MAINTENANCE_FIRE)
+	isAdminProyek := divisiStr == string(models.DivisiMaintenancePAC) || divisiStr == string(models.DivisiMaintenanceFire)
+	canEditWO := roleStr == string(models.RoleMaster) || isAdminProyek
+
+	formatWODate := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format("2006-01-02")
+	}
+
+	woChanged := body.NoWO != impl.NoWO || body.TanggalWO != formatWODate(impl.TanggalWO)
+	if woChanged && !canEditWO {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Admin Proyek atau akun dengan role Master yang dapat mengubah nomor Work Order.",
 		})
 	}
 
@@ -287,7 +305,7 @@ func UpdateDetailImplementasi(c echo.Context) error {
 
 func AddBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -295,6 +313,12 @@ func AddBarangImplementasi(c echo.Context) error {
 	impl, err := preloadImplementasi(trackingID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
+	}
+
+	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+		})
 	}
 
 	var body struct {
@@ -342,7 +366,7 @@ func AddBarangImplementasi(c echo.Context) error {
 func UpdateBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
 	barangID := c.Param("barangId")
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -350,6 +374,12 @@ func UpdateBarangImplementasi(c echo.Context) error {
 	impl, err := preloadImplementasi(trackingID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
+	}
+
+	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+		})
 	}
 
 	var barang models.ImplementasiBarang
@@ -433,7 +463,7 @@ func UpdateBarangImplementasi(c echo.Context) error {
 func DeleteBarangImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
 	barangID := c.Param("barangId")
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
 	}
@@ -441,6 +471,12 @@ func DeleteBarangImplementasi(c echo.Context) error {
 	impl, err := preloadImplementasi(trackingID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
+	}
+
+	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+		})
 	}
 
 	var barang models.ImplementasiBarang

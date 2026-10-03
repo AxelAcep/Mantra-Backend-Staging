@@ -12,7 +12,9 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 
 	// ── 1. STATIC ROUTES ─────────────────────────────────────────────────────
 	g.GET("", controllers.GetTrackingPenawaranList, middleware.VerifyToken, middleware.AuthorizeRole(3))
-	g.GET("/aktif", controllers.GetTrackingPenawaranAktif, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	// Level 4 (semua role) + scoping divisi di handler via canViewStep —
+	// karyawan PROCUREMENT_GA butuh akses tabel PO Aktif (implementasi).
+	g.GET("/aktif", controllers.GetTrackingPenawaranAktif, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/riwayat", controllers.GetTrackingPenawaranRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.POST("", controllers.CreateTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/mo/all", controllers.GetTrackingPenawaranMO, middleware.VerifyToken, middleware.AuthorizeRole(1))
@@ -77,16 +79,20 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	g.PATCH("/:id/accounting", controllers.UpdateAccounting, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/accounting/item/:itemId/bayar", controllers.BayarItemTermin, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
-	// Implementasi (Step 6)
-	g.GET("/:id/implementasi", controllers.GetDetailImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	// Implementasi (Step 6) — level 4 + scoping divisi di handler
+	// (canViewStepForTracking / canEditImplementasiBarang): karyawan
+	// PROCUREMENT_GA boleh isi tabel pembelian di step 6.
+	g.GET("/:id/implementasi", controllers.GetDetailImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/implementasi", controllers.UpdateDetailImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
-	g.POST("/:id/implementasi/barang", controllers.AddBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
-	g.PATCH("/:id/implementasi/barang/:barangId", controllers.UpdateBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
-	g.DELETE("/:id/implementasi/barang/:barangId", controllers.DeleteBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	g.POST("/:id/implementasi/barang", controllers.AddBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.PATCH("/:id/implementasi/barang/:barangId", controllers.UpdateBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
+	g.DELETE("/:id/implementasi/barang/:barangId", controllers.DeleteBarangImplementasi, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("/:id/implementasi/assign-pga", controllers.AssignPGAStaff, middleware.VerifyToken, middleware.AuthorizeRole(3))
 
 	// ── 6. DYNAMIC GENERAL /:id (Taruh paling bawah di grup ini) ────────────
-	g.GET("/:id", controllers.GetDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	// Level 4: header wizard dibutuhkan semua tahap; handler sudah redact
+	// PermintaanMasuk via canViewStep untuk yang tidak berhak.
+	g.GET("/:id", controllers.GetDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.PATCH("/:id/detail", controllers.UpdateDetailTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.PATCH("/:id/presales", controllers.AssignPreSales, middleware.VerifyToken, middleware.AuthorizeRole(2))
 	g.PATCH("/:id/status", controllers.UpdateStatusPermintaanMasuk, middleware.VerifyToken, middleware.AuthorizeRole(3))

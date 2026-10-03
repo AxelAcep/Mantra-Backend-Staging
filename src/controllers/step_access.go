@@ -120,3 +120,16 @@ func canViewStepForTracking(step models.StepPenawaran, roleStr, divisiStr, pegaw
 	}
 	return false
 }
+
+// canEditImplementasiBarang menentukan siapa yang boleh mengisi/mengubah
+// daftar barang pembelian (tahap implementasi). Ikut view-matriks
+// StepImplementasi (SALES, PROCUREMENT_GA, FINANCE_ACCOUNTING,
+// ADMIN_SEKERTARIAT — semua role, termasuk KARYAWAN) + MASTER +
+// MANAGER_OPERASIONAL/DIREKTUR/KOMISARIS, ditambah Admin Proyek yang
+// di-assign per-tracking.
+func canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID string) bool {
+	if canViewStep(models.StepImplementasi, roleStr, divisiStr) {
+		return true
+	}
+	return isAssignedAdminProyek(pegawaiID, trackingID)
+}

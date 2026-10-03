@@ -111,52 +111,60 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
-		// --- Buat Daily untuk Admin Sekertariat ---
-		var adminPegawai models.Pegawai
-		if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminPegawai).Error; err != nil {
-			// fallback ke pegawai yang sedang login
-			adminPegawai.ID = pegawaiID
-			adminPegawai.Nama = namaPegawai
-		}
-
 		var tracking models.TrackingPenawaran
 		config.DB.Preload("Perusahaan").First(&tracking, "id = ?", trackingID)
-		namaPerusahaan := tracking.Perusahaan.Nama
 
-		now := time.Now()
-		deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
-		if now.After(deadline) {
-			deadline = deadline.Add(24 * time.Hour)
-		}
+		// --- Backfill daily step 4 untuk Admin Sekertaris ---
+		// Daily pengingat approval kini dibuat otomatis saat tracking MASUK
+		// step 4 (TryFinalizeReviewInternal). Blok ini hanya fallback untuk
+		// tracking lama yang sudah berada di step 4 sebelum perubahan itu.
+		if persetujuan.ActivityAdminID == nil {
+			var adminPegawai models.Pegawai
+			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminPegawai).Error; err != nil {
+				// fallback ke pegawai yang sedang login
+				adminPegawai.ID = pegawaiID
+				adminPegawai.Nama = namaPegawai
+			}
 
-		activityID := generateActivityID()
-		dailyAdmin := models.Activity{
-			ID:            activityID,
-			PegawaiID:     adminPegawai.ID,
-			TerkaitPO:     &tracking.NomorPenawaran,
-			Perusahaan:    &namaPerusahaan,
-			Kategori:      models.KategoriQuotation,
-			Judul:         "Pengecekan Persetujuan Manajemen - " + namaPerusahaan,
-			Deskripsi:     "Activity otomatis setelah Direktur/Komisaris menyetujui persetujuan manajemen untuk penawaran #" + tracking.NomorPenawaran,
-			WaktuMulai:    time.Now(),
-			TargetSelesai: deadline,
-			Status:        models.StatusOnProgress,
-		}
-		if err := config.DB.Create(&dailyAdmin).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
-		}
+			namaPerusahaan := tracking.Perusahaan.Nama
 
-		persetujuan.ActivityAdminID = &activityID
-		config.DB.Save(&persetujuan)
+			now := time.Now()
+			deadline := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, now.Location())
+			if now.After(deadline) {
+				deadline = deadline.Add(24 * time.Hour)
+			}
+
+			activityID := generateActivityID()
+			dailyAdmin := models.Activity{
+				ID:            activityID,
+				PegawaiID:     adminPegawai.ID,
+				TerkaitPO:     &tracking.NomorPenawaran,
+				Perusahaan:    &namaPerusahaan,
+				Kategori:      models.KategoriQuotation,
+				Judul:         "Pengecekan Persetujuan Manajemen - " + namaPerusahaan,
+				Deskripsi:     "Activity otomatis saat pengadaan masuk tahap Persetujuan Manajemen. Mengingatkan Direktur/Komisaris untuk melakukan approval dan mengunggah dokumen yang sudah ditandatangani untuk penawaran #" + tracking.NomorPenawaran,
+				WaktuMulai:    time.Now(),
+				TargetSelesai: deadline,
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&dailyAdmin).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
+			}
+
+			persetujuan.ActivityAdminID = &activityID
+			config.DB.Save(&persetujuan)
+		}
 
 		// --- Inisialisasi FollowUp ---
+		// Pengiriman dokumen penawaran lengkap ke klien ditugaskan ke Admin
+		// Sekertaris (DivisiAdminSekertaris), bukan Admin Sekertariat.
 		var existingFollowUp models.FollowUp
 		followUpExists := config.DB.Where("tracking_penawaran_id = ?", trackingID).First(&existingFollowUp).Error == nil
 		if !followUpExists {
 			var adminFollowUp models.Pegawai
 			var adminID string
 			var adminNama string
-			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertariat).First(&adminFollowUp).Error; err == nil {
+			if err := config.DB.Where("divisi = ?", models.DivisiAdminSekertaris).First(&adminFollowUp).Error; err == nil {
 				adminID = adminFollowUp.ID
 				adminNama = adminFollowUp.Nama
 			} else {
@@ -191,7 +199,7 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 					LogAktivitas: []models.LogFollowUp{
 						{
 							Aksi:        "Follow Up Dimulai",
-							Keterangan:  "Inisialisasi proses follow up. Tugas kirim penawaran ditugaskan ke Admin: " + adminNama,
+							Keterangan:  "Inisialisasi proses follow up. Tugas kirim penawaran ditugaskan ke Admin Sekertaris: " + adminNama,
 							PegawaiID:   pegawaiID,
 							NamaPegawai: namaPegawai,
 							CreatedAt:   time.Now(),

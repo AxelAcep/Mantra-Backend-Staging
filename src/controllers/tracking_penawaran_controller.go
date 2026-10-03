@@ -1083,12 +1083,10 @@ func GetTrackingPenawaranList(c echo.Context) error {
 }
 
 func GetTrackingPenawaranAktif(c echo.Context) error {
-	pegawaiID, ok := getPenawaranPegawaiID(c)
+	_, roleStr, divisiStr, ok := getStepAccessClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 	}
-
-	_, _ = c.Get("isMaster").(bool)
 
 	page := max(1, toInt(c.QueryParam("page"), 1))
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
@@ -1097,7 +1095,6 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	filterJenis := strings.TrimSpace(c.QueryParam("jenisPenawaran"))
 	sortBy := c.QueryParam("sortBy")
 	sortDir := c.QueryParam("sortDir")
-	_ = pegawaiID
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
 		Where(`"step_saat_ini" IN ?`, stepsAktif).
@@ -1191,6 +1188,20 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 		} else {
 			allItems = append(allItems, buildPenawaranListItem(r, nil))
 		}
+	}
+
+	// Scoping khusus role KARYAWAN: tampilkan hanya step yang boleh dilihat
+	// divisi tsb lewat matriks canViewStep (mis. PROCUREMENT_GA → hanya
+	// IMPLEMENTASI; KARYAWAN divisi lain → list kosong, bukan bocoran data
+	// BAST/Pembayaran). Role lain tidak berubah perilakunya.
+	if roleStr == string(models.RoleKaryawan) {
+		filtered := make([]PenawaranListItem, 0, len(allItems))
+		for _, item := range allItems {
+			if canViewStep(item.StepSaatIni, roleStr, divisiStr) {
+				filtered = append(filtered, item)
+			}
+		}
+		allItems = filtered
 	}
 
 	// Filter by garansi kategori (PAC / FIRE / UMUM).
