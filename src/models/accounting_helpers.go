@@ -47,10 +47,20 @@ func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, nomorPenawaran stri
 		deadline = *item.Deadline
 	}
 
+	// Resolve konteks (termasuk nama perusahaan) dari nomor penawaran —
+	// target_hari_ini.md poin 4.
+	ctx := resolveKonteksPengadaan(tx, nomorPenawaran)
+	var perusahaan *string
+	if ctx.perusahaan != "" {
+		nama := ctx.perusahaan
+		perusahaan = &nama
+	}
+
 	activity := Activity{
 		ID:            uuid.New().String(),
 		PegawaiID:     pic.ID,
 		TerkaitPO:     &nomorPenawaran,
+		Perusahaan:    perusahaan,
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         fmt.Sprintf("Penagihan Termin %d - %s", item.Index, item.NamaTermin),
 		Deskripsi:     fmt.Sprintf("Activity otomatis penagihan termin pembayaran #%d (%s) untuk penawaran %s", item.Index, item.NamaTermin, nomorPenawaran),
@@ -66,9 +76,12 @@ func CreateItemTerminActivity(tx *gorm.DB, item *ItemTermin, nomorPenawaran stri
 		return err
 	}
 
-	// Notifikasi Tahap 9 (target_hari_ini.md): Daily penagihan termin (per
-	// termin) ke Kadiv Finance (pemilik) + MO.
-	NotifTugasPengadaan(tx, &activity, "", "")
+	// Notifikasi Tahap 9 (target_hari_ini.md poin 5): Daily penagihan termin
+	// (per termin) ke Kadiv Finance (pemilik) + MO. trackingID di-resolve
+	// dari nomor penawaran supaya link /penawaran/{id} selalu terisi, dan
+	// step eksplisit PEMBAYARAN supaya notif menampilkan tahap "Accounting"
+	// (bukan stepSaatIni yang masih Implementasi).
+	NotifTugasPengadaanStep(tx, &activity, ctx.trackingID, "", StepPembayaran)
 
 	item.ActivityID = &activity.ID
 	if err := tx.Model(&ItemTermin{}).Where("id = ?", item.ID).

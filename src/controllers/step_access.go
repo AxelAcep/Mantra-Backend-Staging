@@ -121,14 +121,28 @@ func canViewStepForTracking(step models.StepPenawaran, roleStr, divisiStr, pegaw
 	return false
 }
 
-// canEditImplementasiBarang menentukan siapa yang boleh mengisi/mengubah
-// daftar barang pembelian (tahap implementasi). Ikut view-matriks
-// StepImplementasi (SALES, PROCUREMENT_GA, FINANCE_ACCOUNTING,
-// ADMIN_SEKERTARIAT — semua role, termasuk KARYAWAN) + MASTER +
-// MANAGER_OPERASIONAL/DIREKTUR/KOMISARIS, ditambah Admin Proyek yang
-// di-assign per-tracking.
-func canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID string) bool {
-	if canViewStep(models.StepImplementasi, roleStr, divisiStr) {
+// canEditImplementasiBarang menentukan siapa yang boleh mengisi/mengubah/
+// menghapus daftar barang pembelian (tahap implementasi): hanya divisi
+// PROCUREMENT_GA (semua role di divisi itu) + MASTER sebagai super admin
+// — target_hari_ini.md poin 1. Berbeda dari matriks view StepImplementasi
+// yang lebih longgar.
+func canEditImplementasiBarang(roleStr, divisiStr string) bool {
+	if roleStr == "MASTER" {
+		return true
+	}
+	return divisiStr == "PROCUREMENT_GA"
+}
+
+// canManageBastGaransi menentukan siapa yang boleh menambah/mengubah/melakukan
+// action di tahap BAST (step 7) & Garansi (step 8) — target_hari_ini.md poin 2:
+// hanya Admin Proyek yang di-assign per-tracking, role MASTER, dan divisi
+// MANAGER_OPERASIONAL. Direktur/Komisaris view-only (tetap bisa lihat lewat
+// canViewStepForTracking).
+func canManageBastGaransi(pegawaiID, trackingID, roleStr, divisiStr string) bool {
+	if roleStr == "MASTER" {
+		return true
+	}
+	if divisiStr == "MANAGER_OPERASIONAL" {
 		return true
 	}
 	return isAssignedAdminProyek(pegawaiID, trackingID)

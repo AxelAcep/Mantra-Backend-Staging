@@ -315,9 +315,9 @@ func AddBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
-	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+	if !canEditImplementasiBarang(roleStr, divisiStr) {
 		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+			"error": "Hanya akun divisi Procurement GA (dan Master) yang dapat mengubah daftar barang pembelian.",
 		})
 	}
 
@@ -376,9 +376,9 @@ func UpdateBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
-	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+	if !canEditImplementasiBarang(roleStr, divisiStr) {
 		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+			"error": "Hanya akun divisi Procurement GA (dan Master) yang dapat mengubah daftar barang pembelian.",
 		})
 	}
 
@@ -473,9 +473,9 @@ func DeleteBarangImplementasi(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Data Implementasi tidak ditemukan."})
 	}
 
-	if !canEditImplementasiBarang(roleStr, divisiStr, pegawaiID, trackingID) {
+	if !canEditImplementasiBarang(roleStr, divisiStr) {
 		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "Hanya divisi yang berhak pada tahap implementasi yang dapat mengubah daftar barang pembelian.",
+			"error": "Hanya akun divisi Procurement GA (dan Master) yang dapat mengubah daftar barang pembelian.",
 		})
 	}
 

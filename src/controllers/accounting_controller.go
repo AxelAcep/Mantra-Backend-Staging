@@ -365,5 +365,32 @@ func BayarItemTermin(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// Notifikasi ke Manager Operasional (fan-out otomatis) saat tim finance
+	// menandai lunas — target_hari_ini.md poin 3. Step eksplisit PEMBAYARAN
+	// supaya tahap tampil "Accounting". Best-effort: kegagalan insert notif
+	// tidak menggagalkan pembayaran (helper notif sudah best-effort).
+	var termin models.TerminPembayaran
+	if errTerm := config.DB.
+		Preload("TrackingPenawaran").
+		Preload("TrackingPenawaran.Perusahaan").
+		First(&termin, "id = ?", item.TerminPembayaranID).Error; errTerm == nil {
+		tracking := termin.TrackingPenawaran
+		nomorPenawaran := tracking.NomorPenawaran
+		namaPerusahaan := ""
+		if tracking.Perusahaan.Nama != "" {
+			namaPerusahaan = tracking.Perusahaan.Nama
+		}
+		judul := fmt.Sprintf("Termin #%d (%s) Ditandai Lunas", item.Index, item.NamaTermin)
+		pesan := fmt.Sprintf(
+			"Termin pembayaran #%d (%s) untuk penawaran %s telah ditandai lunas oleh tim finance.",
+			item.Index, item.NamaTermin, nomorPenawaran,
+		)
+		models.NotifPengadaanEventStep(
+			config.DB, judul, pesan,
+			tracking.ID, nomorPenawaran, namaPerusahaan, tracking.LokasiProyek,
+			models.StepPembayaran, item.ActivityID,
+		)
+	}
+
 	return c.JSON(http.StatusOK, item)
 }

@@ -104,6 +104,23 @@ func nomorPenawaranTracking(tx *gorm.DB, trackingID string) *string {
 	return &nomor
 }
 
+// PerusahaanTracking mengembalikan pointer nama perusahaan dari trackingID
+// untuk field Activity.Perusahaan pada activity otomatis — target_hari_ini.md
+// poin 4 (data perusahaan harus terbawa). Best-effort, nil bila tidak
+// ditemukan.
+func PerusahaanTracking(tx *gorm.DB, trackingID string) *string {
+	if trackingID == "" {
+		return nil
+	}
+	var tracking TrackingPenawaran
+	if err := tx.Preload("Perusahaan").
+		First(&tracking, "id = ?", trackingID).Error; err != nil {
+		return nil
+	}
+	nama := tracking.Perusahaan.Nama
+	return &nama
+}
+
 // ─── 1. Pengecekan Admin Proyek DITERIMA → buat daily pengecekan Finance ─────
 // Rantai berurutan FollowUp Stage 4: Admin Proyek -> Finance -> Admin
 // Sekertaris (minta TTD Direktur) -> Stage 5. Sebelumnya 2 daily
@@ -147,6 +164,7 @@ func handlePengecekanAdminProyekDiterima(tx *gorm.DB, a *Activity) error {
 		ID:            uuid.New().String(),
 		PegawaiID:     financeSupervisor.ID,
 		TerkaitPO:     &nomorPO,
+		Perusahaan:    PerusahaanTracking(tx, followUp.TrackingPenawaranID),
 		Kategori:      KategoriDokumenPendukung,
 		Judul:         "Pengecekan Dokumen PO (Finance)",
 		Deskripsi:     "Cek kelengkapan PO customer & kesiapan data terkait penawaran " + nomorPO + " sebelum lanjut ke proses dokumen PO internal.",
@@ -221,6 +239,7 @@ func handlePengecekanFinanceDiterima(tx *gorm.DB, a *Activity) error {
 		ID:            uuid.New().String(),
 		PegawaiID:     adminSekertaris.ID,
 		TerkaitPO:     &nomorPO,
+		Perusahaan:    PerusahaanTracking(tx, followUp.TrackingPenawaranID),
 		Kategori:      KategoriDokumenPendukung,
 		Judul:         "Minta TTD Direktur - Dokumen PO",
 		Deskripsi:     "Meminta tanda tangan Direktur untuk dokumen PO terkait penawaran " + nomorPO,
@@ -578,6 +597,7 @@ func handlePembelianBarangDiterima(tx *gorm.DB, a *Activity) error {
 		ID:            uuid.New().String(),
 		PegawaiID:     a.PegawaiID,
 		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
+		Perusahaan:    PerusahaanTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity otomatis pengantaran barang untuk tahap Implementasi setelah pembelian barang diterima",
@@ -671,6 +691,7 @@ func handlePengantaranBarangDiterima(tx *gorm.DB, a *Activity) error {
 		ID:            uuid.New().String(),
 		PegawaiID:     adminProyekActivity.PegawaiID,
 		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
+		Perusahaan:    PerusahaanTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Instalasi Barang Implementasi",
 		Deskripsi:     "Activity otomatis instalasi barang untuk tahap Implementasi setelah pengantaran barang diterima",
@@ -1149,6 +1170,7 @@ func ResumePengantaranHold(tx *gorm.DB, impl *Implementasi, followUp *FollowUp) 
 		ID:            uuid.New().String(),
 		PegawaiID:     pembelianActivity.PegawaiID,
 		TerkaitPO:     nomorPenawaranTracking(tx, impl.TrackingPenawaranID),
+		Perusahaan:    PerusahaanTracking(tx, impl.TrackingPenawaranID),
 		Kategori:      KategoriAkomodasiProject,
 		Judul:         "Pengantaran Barang Implementasi",
 		Deskripsi:     "Activity pengantaran barang (dilanjutkan setelah termin 1 DP lunas)",

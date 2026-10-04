@@ -91,9 +91,14 @@ func GetDetailGaransi(c echo.Context) error {
 func KonfigurasiGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canManageBastGaransi(pegawaiID, trackingID, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Admin Proyek, Master, atau Manager Operasional yang dapat mengubah data tahap ini.",
+		})
 	}
 
 	var body struct {
@@ -252,9 +257,14 @@ func UpdateTanggalKunjunganGaransi(c echo.Context) error {
 	trackingID := c.Param("id")
 	monthID := c.Param("monthId")
 
-	pegawaiID, namaPegawai, _, _, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Unauthorized."})
+	}
+	if !canManageBastGaransi(pegawaiID, trackingID, roleStr, divisiStr) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Hanya Admin Proyek, Master, atau Manager Operasional yang dapat mengubah data tahap ini.",
+		})
 	}
 
 	var body struct {

@@ -137,16 +137,19 @@ func CreateBastEntryActivity(tx *gorm.DB, entry *BastEntry, picID string, katego
 		trackingID = bast.TrackingPenawaranID
 	}
 	activity.TerkaitPO = nomorPenawaranTracking(tx, trackingID)
+	activity.Perusahaan = PerusahaanTracking(tx, trackingID)
 
 	if err := tx.Create(&activity).Error; err != nil {
 		fmt.Println(">>> Gagal membuat Activity BastEntry:", err)
 		return err
 	}
 
-	// Notifikasi Tahap 7 (target_hari_ini.md): Daily BAST (per kategori,
+	// Notifikasi Tahap 7 (target_hari_ini.md poin 6): Daily BAST (per kategori,
 	// per entry) ke Admin Proyek (pemilik) + MO. trackingID sudah di-resolve
-	// di atas lewat Bast-nya.
-	NotifTugasPengadaan(tx, &activity, trackingID, "")
+	// di atas lewat Bast-nya. Step eksplisit BAST supaya notif menampilkan
+	// tahap "BAST" — pembuatan daily bisa terjadi SEBELUM step_saat_ini
+	// di-update ke BAST (lihat handleInstalasiBarangDiterima).
+	NotifTugasPengadaanStep(tx, &activity, trackingID, "", StepBAST)
 
 	entry.ActivityAdminProyekID = &activity.ID
 	if err := tx.Model(&BastEntry{}).Where("id = ?", entry.ID).

@@ -36,7 +36,9 @@ func labelTahapan(step StepPenawaran) string {
 	case StepGaransi:
 		return "Garansi"
 	case StepPembayaran:
-		return "Pembayaran"
+		// Label "Accounting" — samakan dengan label tab di FE
+		// (target_hari_ini.md poin 5: tahap proses pengadaan accounting).
+		return "Accounting"
 	default:
 		return ""
 	}
@@ -50,6 +52,7 @@ type konteksPengadaan struct {
 	perusahaan    string
 	lokasiProyek  string
 	tahapan       string
+	stepCode      StepPenawaran // StepPenawaran enum — dipakai FE buat navigasi ke step; "" = auto-resolve dari stepSaatIni
 }
 
 // resolveKonteksPengadaan mencari konteks proses pengadaan dari nomor
@@ -70,6 +73,7 @@ func resolveKonteksPengadaan(tx *gorm.DB, terkaitPO string) konteksPengadaan {
 		k.perusahaan = tracking.Perusahaan.Nama
 		k.lokasiProyek = tracking.LokasiProyek
 		k.tahapan = labelTahapan(tracking.StepSaatIni)
+		k.stepCode = tracking.StepSaatIni
 		return k
 	}
 
@@ -83,6 +87,7 @@ func resolveKonteksPengadaan(tx *gorm.DB, terkaitPO string) konteksPengadaan {
 			k.perusahaan = tracking2.Perusahaan.Nama
 			k.lokasiProyek = tracking2.LokasiProyek
 			k.tahapan = labelTahapan(tracking2.StepSaatIni)
+			k.stepCode = tracking2.StepSaatIni
 		}
 	}
 
@@ -111,6 +116,9 @@ func resolveKonteksByTrackingID(tx *gorm.DB, k *konteksPengadaan) {
 		if k.tahapan == "" {
 			k.tahapan = labelTahapan(tracking.StepSaatIni)
 		}
+		if k.stepCode == "" {
+			k.stepCode = tracking.StepSaatIni
+		}
 	}
 }
 
@@ -132,6 +140,7 @@ func insertNotifikasiPengadaan(tx *gorm.DB, pegawaiID string, activityID *string
 		Perusahaan:          k.perusahaan,
 		LokasiProyek:        k.lokasiProyek,
 		Tahapan:             k.tahapan,
+		StepCode:            string(k.stepCode),
 		Tipe:                NotifTipePengadaan,
 		IsRead:              false,
 		CreatedAt:           time.Now(),
@@ -224,6 +233,14 @@ func FindPegawaiIDsByDivisi(tx *gorm.DB, divisiList ...Divisi) []string {
 // Bila trackingID/perusahaan/lokasiProyek kosong, di-resolve otomatis dari
 // act.TerkaitPO; tahapan diambil dari stepSaatIni tracking.
 func NotifTugasPengadaan(tx *gorm.DB, act *Activity, trackingID, lokasiProyek string, extraPegawaiIDs ...string) {
+	NotifTugasPengadaanStep(tx, act, trackingID, lokasiProyek, "", extraPegawaiIDs...)
+}
+
+// NotifTugasPengadaanStep = NotifTugasPengadaan + step eksplisit. step
+// kosong = auto-resolve dari stepSaatIni (perilaku lama); step terisi =
+// override tahapan + stepCode notifikasi — dipakai notif termin & BAST yang
+// dibuat sebelum/saat step berubah (target_hari_ini.md poin 5 & 6).
+func NotifTugasPengadaanStep(tx *gorm.DB, act *Activity, trackingID, lokasiProyek string, step StepPenawaran, extraPegawaiIDs ...string) {
 	k := konteksPengadaan{trackingID: trackingID, lokasiProyek: lokasiProyek}
 	if act.TerkaitPO != nil {
 		k.terkaitPO = *act.TerkaitPO
@@ -246,8 +263,17 @@ func NotifTugasPengadaan(tx *gorm.DB, act *Activity, trackingID, lokasiProyek st
 		if k.tahapan == "" {
 			k.tahapan = r.tahapan
 		}
+		if k.stepCode == "" {
+			k.stepCode = r.stepCode
+		}
 	}
 	resolveKonteksByTrackingID(tx, &k)
+
+	// Override step eksplisit menang atas hasil resolve (stepSaatIni).
+	if step != "" {
+		k.stepCode = step
+		k.tahapan = labelTahapan(step)
+	}
 
 	seen := map[string]bool{}
 	if act.PegawaiID != "" {
@@ -269,6 +295,13 @@ func NotifTugasPengadaan(tx *gorm.DB, act *Activity, trackingID, lokasiProyek st
 // (mis. approval/ditolak Direktur). Penerima eksplisit + fan-out MO.
 // activityID boleh nil — link daily activity tidak tampil di card bila kosong.
 func NotifPengadaanEvent(tx *gorm.DB, judul, pesan, trackingID, terkaitPO, perusahaan, lokasiProyek string, activityID *string, pegawaiIDs ...string) {
+	NotifPengadaanEventStep(tx, judul, pesan, trackingID, terkaitPO, perusahaan, lokasiProyek, "", activityID, pegawaiIDs...)
+}
+
+// NotifPengadaanEventStep = NotifPengadaanEvent + step eksplisit (lihat
+// NotifTugasPengadaanStep). Dipakai notif lunas termin (target_hari_ini.md
+// poin 3) yang harus menampilkan tahap Accounting.
+func NotifPengadaanEventStep(tx *gorm.DB, judul, pesan, trackingID, terkaitPO, perusahaan, lokasiProyek string, step StepPenawaran, activityID *string, pegawaiIDs ...string) {
 	k := konteksPengadaan{trackingID: trackingID, terkaitPO: terkaitPO, perusahaan: perusahaan, lokasiProyek: lokasiProyek}
 
 	if k.trackingID == "" || k.perusahaan == "" || k.lokasiProyek == "" {
@@ -285,8 +318,17 @@ func NotifPengadaanEvent(tx *gorm.DB, judul, pesan, trackingID, terkaitPO, perus
 		if k.tahapan == "" {
 			k.tahapan = r.tahapan
 		}
+		if k.stepCode == "" {
+			k.stepCode = r.stepCode
+		}
 	}
 	resolveKonteksByTrackingID(tx, &k)
+
+	// Override step eksplisit menang atas hasil resolve (stepSaatIni).
+	if step != "" {
+		k.stepCode = step
+		k.tahapan = labelTahapan(step)
+	}
 
 	seen := map[string]bool{}
 	for _, id := range pegawaiIDs {

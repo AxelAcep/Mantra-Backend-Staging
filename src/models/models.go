@@ -207,6 +207,7 @@ type Notifikasi struct {
 	LokasiProyek        string `json:"lokasiProyek,omitempty"`
 	TrackingPenawaranID string `gorm:"index" json:"trackingPenawaranId,omitempty"` // link /penawaran/{id}
 	Tahapan             string `json:"tahapan,omitempty"`                          // label tahap proses pengadaan saat notif dibuat
+	StepCode            string `gorm:"index" json:"stepCode,omitempty"`            // StepPenawaran enum ("PEMBAYARAN", "BAST", dst) — dipakai FE buat navigasi ke step tertentu
 	Tipe                string `gorm:"default:'DAILY_ACTIVITY';index" json:"tipe"` // DAILY_ACTIVITY | PENAWARAN
 }
 
