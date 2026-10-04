@@ -687,10 +687,27 @@ func UploadDokumenFollowUp(c echo.Context) error {
 
 		var tracking models.TrackingPenawaran
 		config.DB.Where("id = ?", trackingID).First(&tracking)
-		dualKategori := len(models.DetectBastKategori(tracking.JenisPenawaran)) == 2
+		kategoriList := models.DetectBastKategori(tracking.JenisPenawaran)
+		multiKategori := len(kategoriList) > 1
 		bastFilled := followUp.TotalBAST != nil
-		if dualKategori {
-			bastFilled = followUp.TotalBastPAC != nil && followUp.TotalBastFire != nil
+		if multiKategori {
+			bastFilled = true
+			for _, kategori := range kategoriList {
+				switch kategori {
+				case models.KategoriBastPAC:
+					if followUp.TotalBastPAC == nil {
+						bastFilled = false
+					}
+				case models.KategoriBastFire:
+					if followUp.TotalBastFire == nil {
+						bastFilled = false
+					}
+				case models.KategoriBastBattery:
+					if followUp.TotalBastBattery == nil {
+						bastFilled = false
+					}
+				}
+			}
 		}
 		if !bastFilled {
 			os.Remove(destPath)
