@@ -3,3 +3,6 @@
 
 .env
 /uploads
+/tmp
+app
+app.exe
