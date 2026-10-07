@@ -939,6 +939,30 @@ type PenawaranListResponse struct {
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
+// penawaranOrderClause menerjemahkan sortBy/sortDir jadi ORDER BY yang
+// diterapkan di SQL — sebelum LIMIT/OFFSET — supaya urutannya berlaku untuk
+// seluruh data, bukan cuma halaman yang sedang tampil. Kolomnya di-whitelist,
+// jadi nilai dari query param tidak pernah masuk ke SQL mentah-mentah.
+func penawaranOrderClause(sortBy, sortDir string) string {
+	allowedSorts := map[string]string{
+		"nomorPenawaran": `"nomor_penawaran"`,
+		"tanggalMasuk":   `"created_at"`,
+		"perusahaanName": `"customer_name"`,
+		"stepSaatIni":    `"step_saat_ini"`,
+	}
+
+	col, ok := allowedSorts[sortBy]
+	if !ok {
+		return `"created_at" DESC`
+	}
+
+	dir := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		dir = "DESC"
+	}
+	return col + " " + dir
+}
+
 var stepsPengadaan = []models.StepPenawaran{
 	models.StepPermintaanMasuk,
 	models.StepPenyusunanBoQ,
@@ -1075,23 +1099,7 @@ func GetTrackingPenawaranList(c echo.Context) error {
 		query = query.Where(`"step_saat_ini" IN ?`, stepsPengadaan)
 	}
 
-	// Sorting
-	orderClause := `"created_at" DESC`
-	if sortBy != "" {
-		allowedSorts := map[string]string{
-			"nomorPenawaran": `"nomor_penawaran"`,
-			"tanggalMasuk":   `"created_at"`,
-			"perusahaanName": `"customer_name"`,
-			"stepSaatIni":    `"step_saat_ini"`,
-		}
-		if col, ok := allowedSorts[sortBy]; ok {
-			dir := "ASC"
-			if strings.ToUpper(sortDir) == "DESC" {
-				dir = "DESC"
-			}
-			orderClause = col + " " + dir
-		}
-	}
+	orderClause := penawaranOrderClause(sortBy, sortDir)
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -1332,6 +1340,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
 	filterStep := c.QueryParam("step")
+	orderClause := penawaranOrderClause(c.QueryParam("sortBy"), c.QueryParam("sortDir"))
 
 	offset := (page - 1) * limit
 
@@ -1390,7 +1399,7 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 		Preload("Basts").
 		Preload("Garansis").
 		Preload("Accounting.Items").
-		Order(`"created_at" DESC`).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&rows).Error

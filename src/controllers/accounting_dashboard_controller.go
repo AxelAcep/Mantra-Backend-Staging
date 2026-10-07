@@ -200,6 +200,82 @@ type AccountingPOItem struct {
 	TerminTerdekatFlag     string                  `json:"terminTerdekatFlag,omitempty"`
 }
 
+// sortAccountingPOItems mengurutkan seluruh hasil (sebelum dipotong per
+// halaman) supaya urutannya konsisten lintas halaman pagination. Tanpa sortBy,
+// urutannya tetap seperti semula: termin terdekat yang belum dibayar duluan,
+// PO yang sudah lunas ditaruh paling belakang.
+func sortAccountingPOItems(items []AccountingPOItem, sortBy, sortDir string) {
+	desc := strings.EqualFold(sortDir, "desc")
+
+	// compare mengembalikan -1/0/1 untuk urutan menaik.
+	compare := func(a, b AccountingPOItem) int {
+		switch strings.ToLower(sortBy) {
+		case "nomorpenawaran":
+			return strings.Compare(a.NomorPenawaran, b.NomorPenawaran)
+		case "perusahaanname":
+			return strings.Compare(a.PerusahaanName, b.PerusahaanName)
+		case "status":
+			return strings.Compare(a.StatusPembayaran, b.StatusPembayaran)
+		case "persentasedibayar":
+			switch {
+			case a.PersentaseDibayar < b.PersentaseDibayar:
+				return -1
+			case a.PersentaseDibayar > b.PersentaseDibayar:
+				return 1
+			default:
+				return 0
+			}
+		default: // "deadline" & nilai tak dikenal
+			da, db := a.TerminTerdekatDeadline, b.TerminTerdekatDeadline
+			switch {
+			case da == nil && db == nil:
+				return 0
+			case da == nil:
+				return 1
+			case db == nil:
+				return -1
+			case da.Before(*db):
+				return -1
+			case db.Before(*da):
+				return 1
+			default:
+				return 0
+			}
+		}
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+
+		// PO yang sudah lunas tidak punya termin terdekat. Saat diurutkan by
+		// deadline, baris begini selalu ditaruh paling belakang — termasuk di
+		// arah descending — supaya tidak menutupi termin yang masih berjalan.
+		if isDeadlineSort(sortBy) {
+			ea, eb := a.TerminTerdekatDeadline == nil, b.TerminTerdekatDeadline == nil
+			if ea != eb {
+				return eb
+			}
+		}
+
+		result := compare(a, b)
+		if desc {
+			return result > 0
+		}
+		return result < 0
+	})
+}
+
+// isDeadlineSort true untuk sortBy kosong (urutan bawaan) maupun kunci yang
+// memang mengurutkan berdasarkan tenggat termin terdekat.
+func isDeadlineSort(sortBy string) bool {
+	switch strings.ToLower(sortBy) {
+	case "nomorpenawaran", "perusahaanname", "status", "persentasedibayar":
+		return false
+	default:
+		return true
+	}
+}
+
 func GetAccountingPOList(c echo.Context) error {
 	roleStr, divisiStr, ok := getAccountingDashboardClaims(c)
 	if !ok || !isAccountingDashboardAuthorized(roleStr, divisiStr) {
@@ -210,6 +286,9 @@ func GetAccountingPOList(c echo.Context) error {
 	limit := max(1, toInt(c.QueryParam("limit"), 20))
 	search := strings.TrimSpace(c.QueryParam("search"))
 	statusFilter := c.QueryParam("status") // "" | LUNAS | BELUM_LUNAS | OVERDUE
+	// flagFilter dipakai shortcut card "Mendekati Tenggat": PO yang termin
+	// terdekatnya jatuh tempo dalam 2 minggu ke depan tapi belum lewat.
+	flagFilter := strings.ToUpper(c.QueryParam("flag")) // "" | MENDEKATI | LEWAT
 
 	query := config.DB.Model(&models.TerminPembayaran{})
 	if search != "" {
@@ -294,24 +373,21 @@ func GetAccountingPOList(c echo.Context) error {
 			continue
 		}
 
+		switch flagFilter {
+		case "MENDEKATI":
+			if item.TerminTerdekatFlag != "1_MINGGU" && item.TerminTerdekatFlag != "2_MINGGU" {
+				continue
+			}
+		case "LEWAT":
+			if item.TerminTerdekatFlag != "LEWAT" {
+				continue
+			}
+		}
+
 		items = append(items, item)
 	}
 
-	// Urutkan berdasarkan termin terdekat yang belum dibayar (paling mendesak
-	// duluan); yang udah lunas (gak punya termin terdekat) ditaruh belakang.
-	sort.Slice(items, func(i, j int) bool {
-		di, dj := items[i].TerminTerdekatDeadline, items[j].TerminTerdekatDeadline
-		if di == nil && dj == nil {
-			return false
-		}
-		if di == nil {
-			return false
-		}
-		if dj == nil {
-			return true
-		}
-		return di.Before(*dj)
-	})
+	sortAccountingPOItems(items, c.QueryParam("sortBy"), c.QueryParam("sortDir"))
 
 	total := len(items)
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))

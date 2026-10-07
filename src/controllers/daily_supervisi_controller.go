@@ -92,6 +92,8 @@ func SupervisiGetActivityAktif(c echo.Context) error {
 		query = query.Where(`"Activity"."is_supervised" = ?`, isSupervised == "true")
 	}
 
+	query = applySupervisiDeadlineFilter(c, query)
+
 	orderClause := `"Activity"."created_at" DESC`
 	validSortDir := "DESC"
 	if strings.ToUpper(sortDir) == "ASC" {
@@ -110,6 +112,32 @@ func SupervisiGetActivityAktif(c echo.Context) error {
 
 	query = query.Order(orderClause)
 	return paginateMasterActivity(c, query, 10)
+}
+
+// applySupervisiDeadlineFilter melayani shortcut dari card ringkasan supervisi.
+// Himpunan status-nya sengaja disamakan dengan GetSupervisiDashboardStats
+// supaya angka di card selalu cocok dengan jumlah baris di tabel.
+func applySupervisiDeadlineFilter(c echo.Context, query *gorm.DB) *gorm.DB {
+	statusBerjalan := []string{
+		string(models.StatusOnProgress),
+		string(models.StatusPending),
+		string(models.StatusPendingPegawai),
+	}
+	now := time.Now()
+
+	switch strings.ToLower(c.QueryParam("deadline")) {
+	case "today":
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return query.
+			Where(`"Activity"."target_selesai" >= ? AND "Activity"."target_selesai" < ?`, startOfDay, startOfDay.Add(24*time.Hour)).
+			Where(`"Activity"."status" IN ?`, statusBerjalan)
+	case "overdue":
+		return query.
+			Where(`"Activity"."target_selesai" < ?`, now).
+			Where(`"Activity"."status" IN ?`, statusBerjalan)
+	default:
+		return query
+	}
 }
 
 // ── 2. Get All Riwayat filtered by divisi ────────────────────────────────────

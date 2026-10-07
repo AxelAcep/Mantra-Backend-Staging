@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"mantra/src/config"
@@ -189,23 +190,74 @@ func CreateActivity(c echo.Context) error {
 // ==========================================
 
 func baseActivityQuery(pegawaiID string) *gorm.DB {
-	now := time.Now()
 	return config.DB.Model(&models.Activity{}).
 		Where("pegawai_id = ? AND status != ?", pegawaiID, models.StatusDibatalkan).
 		Preload("Pegawai").
 		Preload("Kolaborator").
 		Preload("Dokumen").
-		Preload("Reschedule").
-		Order(fmt.Sprintf(`
-			CASE
-				WHEN status != 'DITERIMA' AND target_selesai < '%s' THEN 1
-				WHEN status = 'DITOLAK' THEN 2
-				WHEN status = 'PENDING' THEN 3
-				WHEN status = 'ON_PROGRESS' THEN 4
-				WHEN status = 'DITERIMA' THEN 5
-				ELSE 6
-			END ASC, created_at DESC
-		`, now.Format("2006-01-02 15:04:05")))
+		Preload("Reschedule")
+}
+
+// defaultActivityOrder adalah urutan prioritas bawaan: overdue di atas, lalu
+// ditolak/pending/on progress/diterima, terbaru dulu dalam tiap kelompok.
+func defaultActivityOrder(now time.Time) string {
+	return fmt.Sprintf(`
+		CASE
+			WHEN status != 'DITERIMA' AND target_selesai < '%s' THEN 1
+			WHEN status = 'DITOLAK' THEN 2
+			WHEN status = 'PENDING' THEN 3
+			WHEN status = 'ON_PROGRESS' THEN 4
+			WHEN status = 'DITERIMA' THEN 5
+			ELSE 6
+		END ASC, created_at DESC
+	`, now.Format("2006-01-02 15:04:05"))
+}
+
+// activitySortColumns membatasi kolom yang boleh dipakai untuk ORDER BY supaya
+// nilai dari query param tidak pernah masuk ke SQL secara mentah.
+var activitySortColumns = map[string]string{
+	"targetselesai": "target_selesai",
+	"deadline":      "target_selesai",
+	"createdat":     "created_at",
+	"tanggalinput":  "created_at",
+	"kategori":      "kategori",
+	"perusahaan":    "perusahaan",
+	"status":        "status",
+	"judul":         "judul",
+}
+
+// applyActivitySort menerapkan sorting di level SQL (sebelum LIMIT/OFFSET),
+// supaya urutan konsisten untuk seluruh data, bukan cuma halaman yang tampil.
+func applyActivitySort(c echo.Context, query *gorm.DB) *gorm.DB {
+	column, ok := activitySortColumns[strings.ToLower(c.QueryParam("sortBy"))]
+	if !ok {
+		return query.Order(defaultActivityOrder(time.Now()))
+	}
+
+	direction := "ASC"
+	if strings.EqualFold(c.QueryParam("sortDir"), "desc") {
+		direction = "DESC"
+	}
+
+	return query.Order(fmt.Sprintf("%s %s", column, direction)).Order("created_at DESC")
+}
+
+// applyActivityDeadlineFilter mendukung shortcut dari card ringkasan. Definisi
+// tiap filter sengaja dibuat sama persis dengan GetActivityCount supaya angka
+// di card selalu cocok dengan jumlah baris di tabel.
+func applyActivityDeadlineFilter(c echo.Context, query *gorm.DB) *gorm.DB {
+	now := time.Now()
+
+	switch strings.ToLower(c.QueryParam("deadline")) {
+	case "today":
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return query.Where("target_selesai >= ? AND target_selesai < ? AND status != ?",
+			todayStart, todayStart.Add(24*time.Hour), models.StatusDiterima)
+	case "overdue":
+		return query.Where("target_selesai < ? AND status = ?", now, models.StatusOnProgress)
+	default:
+		return query
+	}
 }
 
 func paginateActivity(c echo.Context, query *gorm.DB) error {
@@ -225,8 +277,12 @@ func paginateActivity(c echo.Context, query *gorm.DB) error {
 
 	offset := (page - 1) * limit
 
+	query = applyActivityDeadlineFilter(c, query)
+
 	var total int64
 	query.Count(&total)
+
+	query = applyActivitySort(c, query)
 
 	var activities []models.Activity
 	if err := query.Limit(limit).Offset(offset).Find(&activities).Error; err != nil {
@@ -368,7 +424,7 @@ func GetActivityCount(c echo.Context) error {
 	config.DB.Model(&models.Activity{}).
 		Where("pegawai_id = ? AND target_selesai >= ? AND target_selesai < ? AND status NOT IN ?",
 			pegawaiID, todayStart, todayEnd,
-			[]string{string(models.StatusDiterima)},
+			[]string{string(models.StatusDiterima), string(models.StatusDibatalkan)},
 		).Count(&deadlineHariIni)
 
 	config.DB.Model(&models.Activity{}).

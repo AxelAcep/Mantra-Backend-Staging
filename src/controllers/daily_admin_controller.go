@@ -101,7 +101,9 @@ func paginateMasterReschedule(c echo.Context, query *gorm.DB, pageSize int) erro
 
 	var reschedules []models.ActivityReschedule
 	result := query.
-		Order("created_at DESC").
+		// Dikualifikasi dengan nama tabel karena query-nya nge-join Activity &
+		// Pegawai yang sama-sama punya kolom created_at.
+		Order(`"ActivityReschedule"."created_at" DESC`).
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Find(&reschedules)
@@ -189,7 +191,32 @@ func MasterGetReschedulePending(c echo.Context) error {
 		)
 	}
 
+	query = query.Order(rescheduleOrderClause(c.QueryParam("sortBy"), c.QueryParam("sortDir")))
+
 	return paginateMasterReschedule(c, query, 10)
+}
+
+// rescheduleOrderClause menerjemahkan sortBy/sortDir jadi ORDER BY di SQL
+// supaya urutannya berlaku untuk seluruh pengajuan, bukan cuma halaman yang
+// sedang tampil. Kolomnya di-whitelist agar query param tidak masuk SQL mentah.
+func rescheduleOrderClause(sortBy, sortDir string) string {
+	allowedSorts := map[string]string{
+		"judul":             `"Activity"."judul"`,
+		"karyawan":          `"Pegawai"."nama"`,
+		"targetselesai":     `"Activity"."target_selesai"`,
+		"targetselesaibaru": `"ActivityReschedule"."target_selesai_baru"`,
+	}
+
+	col, ok := allowedSorts[strings.ToLower(sortBy)]
+	if !ok {
+		return `"ActivityReschedule"."created_at" DESC`
+	}
+
+	dir := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		dir = "DESC"
+	}
+	return col + " " + dir
 }
 
 // ==========================================
