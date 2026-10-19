@@ -16,6 +16,10 @@ func TrackingPenawaranRoutes(e *echo.Echo) {
 	// karyawan PROCUREMENT_GA butuh akses tabel PO Aktif (implementasi).
 	g.GET("/aktif", controllers.GetTrackingPenawaranAktif, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.GET("/riwayat", controllers.GetTrackingPenawaranRiwayat, middleware.VerifyToken, middleware.AuthorizeRole(3))
+	// Ringkasan proyek pengadaan per perusahaan (counter di halaman detail
+	// perusahaan) — level 4 karena cuma angka agregat, tampil di kartu profil
+	// yang bisa dilihat semua role.
+	g.GET("/summary", controllers.GetPenawaranSummaryPerusahaan, middleware.VerifyToken, middleware.AuthorizeRole(4))
 	g.POST("", controllers.CreateTrackingPenawaran, middleware.VerifyToken, middleware.AuthorizeRole(3))
 	g.GET("/mo/all", controllers.GetTrackingPenawaranMO, middleware.VerifyToken, middleware.AuthorizeRole(1))
 	g.GET("/pegawai", controllers.GetPegawaiByDivisi, middleware.VerifyToken, middleware.AuthorizeRole(3))

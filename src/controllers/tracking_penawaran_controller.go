@@ -978,6 +978,16 @@ var stepsAktif = []models.StepPenawaran{
 	models.StepGaransi,
 }
 
+// bastGaransiSelesaiSQL — "Semua BAST SELESAI DAN semua Garansi tuntas",
+// diterjemahin ke SQL. Dipakai buat filter overallStatus=SELESAI/ON_PROGRESS
+// di tab Riwayat dan buat penghitungan summary per perusahaan.
+// "Semua Bast SELESAI" = ada minimal 1 Bast DAN gak ada satupun yang belum
+// SELESAI (tracking bisa punya sampai 2 Bast, PAC & FIRE); syarat Garansi-nya
+// serupa. Kolomnya gak disimpan sebagai satu kolom langsung, jadi harus di-
+// ekspresikan sebagai subquery. Literally sama dengan logika
+// buildPenawaranListItem.OverallStatus di sisi Go.
+const bastGaransiSelesaiSQL = `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status != ?)`
+
 // currentStepStatus mengembalikan status milik entity step yang SEDANG
 // berjalan (PermintaanMasuk/PenyusunanBoQ/.../Bast/Garansi), bukan
 // TrackingPenawaran.Status. TrackingPenawaran.Status di-update ad-hoc dari
@@ -1069,12 +1079,19 @@ func GetTrackingPenawaranList(c echo.Context) error {
 	filterStep := c.QueryParam("step")
 	sortBy := c.QueryParam("sortBy")
 	sortDir := c.QueryParam("sortDir")
+	filterPerusahaan := strings.TrimSpace(c.QueryParam("perusahaanId"))
 	_ = pegawaiID
 
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
 		Where(`"status" != ?`, models.StatusDibatalkan)
+
+	// Scoping per perusahaan (halaman detail perusahaan) — opsional, kalau
+	// kosong tetap mengembalikan semua data seperti biasa.
+	if filterPerusahaan != "" {
+		query = query.Where(`"perusahaan_id" = ?`, filterPerusahaan)
+	}
 
 	if search != "" {
 		like := "%" + search + "%"
@@ -1159,10 +1176,17 @@ func GetTrackingPenawaranAktif(c echo.Context) error {
 	filterJenis := strings.TrimSpace(c.QueryParam("jenisPenawaran"))
 	sortBy := c.QueryParam("sortBy")
 	sortDir := c.QueryParam("sortDir")
+	filterPerusahaan := strings.TrimSpace(c.QueryParam("perusahaanId"))
 
 	query := config.DB.Model(&models.TrackingPenawaran{}).
 		Where(`"step_saat_ini" IN ?`, stepsAktif).
 		Where(`"status" != ?`, models.StatusDibatalkan)
+
+	// Scoping per perusahaan (halaman detail perusahaan) — opsional, kalau
+	// kosong tetap mengembalikan semua data seperti biasa.
+	if filterPerusahaan != "" {
+		query = query.Where(`"perusahaan_id" = ?`, filterPerusahaan)
+	}
 
 	if search != "" {
 		like := "%" + search + "%"
@@ -1341,10 +1365,17 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	search := strings.TrimSpace(c.QueryParam("search"))
 	filterStep := c.QueryParam("step")
 	orderClause := penawaranOrderClause(c.QueryParam("sortBy"), c.QueryParam("sortDir"))
+	filterPerusahaan := strings.TrimSpace(c.QueryParam("perusahaanId"))
 
 	offset := (page - 1) * limit
 
 	query := config.DB.Model(&models.TrackingPenawaran{})
+
+	// Scoping per perusahaan (halaman detail perusahaan) — opsional, kalau
+	// kosong tetap mengembalikan semua data seperti biasa.
+	if filterPerusahaan != "" {
+		query = query.Where(`"perusahaan_id" = ?`, filterPerusahaan)
+	}
 
 	if search != "" {
 		like := "%" + search + "%"
@@ -1366,9 +1397,6 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 	// persis logika yang dipakai buildPenawaranListItem.OverallStatus, cuma
 	// diterjemahin ke SQL biar bisa difilter di query (bukan di memori),
 	// soalnya SELESAI/ON_PROGRESS gak disimpan sebagai satu kolom langsung.
-	// "Semua Bast SELESAI" = ada minimal 1 Bast DAN gak ada satupun yang belum SELESAI
-	// (tracking bisa punya sampai 2 Bast, PAC & FIRE).
-	bastGaransiSelesaiSQL := `EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Bast" WHERE "Bast".tracking_penawaran_id = "TrackingPenawaran".id AND "Bast".status != ?) AND EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id) AND NOT EXISTS (SELECT 1 FROM "Garansi" WHERE "Garansi".tracking_penawaran_id = "TrackingPenawaran".id AND "Garansi".status != ?)`
 	switch c.QueryParam("overallStatus") {
 	case "DIBATALKAN":
 		query = query.Where(`"TrackingPenawaran".status = ?`, models.StatusDibatalkan)
@@ -1422,6 +1450,42 @@ func GetTrackingPenawaranRiwayat(c echo.Context) error {
 			Total:      total,
 			TotalPages: totalPages,
 		},
+	})
+}
+
+// ─── GET /tracking-penawaran/summary?perusahaanId=... ─────────────────────────
+
+// GetPenawaranSummaryPerusahaan ngitung ringkasan proyek pengadaan milik satu
+// perusahaan — dipakai counter di halaman detail perusahaan.
+//   - total:   semua tracking perusahaan yang gak dibatalkan
+//   - selesai: yang overallStatus-nya SELESAI (BAST & Garansi tuntas — logika
+//     sama dengan bastGaransiSelesaiSQL di tab Riwayat)
+//   - aktif:   sisanya (masih dalam proses)
+func GetPenawaranSummaryPerusahaan(c echo.Context) error {
+	perusahaanID := strings.TrimSpace(c.QueryParam("perusahaanId"))
+	if perusahaanID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "perusahaanId wajib diisi"})
+	}
+
+	baseWhere := `"perusahaan_id" = ? AND "status" != ?`
+
+	var total, selesai int64
+	if err := config.DB.Model(&models.TrackingPenawaran{}).
+		Where(baseWhere, perusahaanID, models.StatusDibatalkan).
+		Count(&total).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
+	}
+	if err := config.DB.Model(&models.TrackingPenawaran{}).
+		Where(baseWhere, perusahaanID, models.StatusDibatalkan).
+		Where(`(`+bastGaransiSelesaiSQL+`)`, models.StatusSelesai, models.StatusGaransiSelesai).
+		Count(&selesai).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"message": "Gagal menghitung data"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]int64{
+		"total":   total,
+		"aktif":   total - selesai,
+		"selesai": selesai,
 	})
 }
 
