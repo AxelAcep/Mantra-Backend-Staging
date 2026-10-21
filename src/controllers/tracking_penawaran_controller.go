@@ -1662,10 +1662,12 @@ func GetPegawaiByDivisi(c echo.Context) error {
 	divisi := c.QueryParam("divisi")
 
 	var pegawai []models.Pegawai
-	query := config.DB.Model(&models.Pegawai{})
+	query := config.DB.Model(&models.Pegawai{}).
+		Joins(`LEFT JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
+		Where(`"User".id IS NULL OR "User".active_status IS NULL OR "User".active_status = true`)
 
 	if divisi != "" {
-		query = query.Where("divisi = ?", divisi)
+		query = query.Where(`"Pegawai".divisi = ?`, divisi)
 	}
 
 	if err := query.Order("nama ASC").Find(&pegawai).Error; err != nil {

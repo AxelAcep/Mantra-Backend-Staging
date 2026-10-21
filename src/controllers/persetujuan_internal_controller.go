@@ -38,6 +38,8 @@ func preloadReviewInternal(trackingID string) (models.ReviewInternal, error) {
         Preload("TrackingPenawaran.Marketing").
 		Preload("ActivityAdmin").        // ← tambahkan ini
         Preload("ActivityAdmin.Pegawai"). // ← opsional, kalau mau info pegawainya juga
+        Preload("ActivitySupervisiSales").
+        Preload("ActivitySupervisiSales.Pegawai").
         Preload("Dokumen").
 		Preload("ActivityAdmin.Dokumen").
 		Preload("ActivityAdmin.Dokumen.Pegawai").
@@ -194,6 +196,10 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 		// disetujui ulang (lihat handleQuotationDiterima).
 		review.AccAdminDirektur = false
 		review.AccManajerOps = false
+		// Sama kayak Admin Sekertaris di atas: AccSupervisiSales yang udah
+		// ke-ACC otomatis dari daily juga gak valid lagi sampai daily-nya
+		// direvisi & disetujui ulang (lihat handleSupervisiSalesDiterima).
+		review.AccSupervisiSales = false
 
 		appendReviewInternalLog(
 			&review,
@@ -223,6 +229,26 @@ func UpdateStatusReviewInternal(c echo.Context) error {
 				}).Error; err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{
 					"error": "Gagal reschedule daily Admin Sekertaris.",
+				})
+			}
+		}
+
+		// Reschedule daily Supervisi Sales juga, sama alasannya.
+		if review.ActivitySupervisiSalesID != nil && *review.ActivitySupervisiSalesID != "" {
+			now := time.Now()
+			deadline := time.Date(now.Year(), now.Month(), now.Day()+2, 17, 0, 0, 0, now.Location())
+			if now.After(deadline) {
+				deadline = deadline.Add(24 * time.Hour)
+			}
+			if err := config.DB.Model(&models.Activity{}).
+				Where("id = ?", *review.ActivitySupervisiSalesID).
+				Updates(map[string]interface{}{
+					"status":           models.StatusOnProgress,
+					"target_selesai":   deadline,
+					"alasan_penolakan": body.Alasan,
+				}).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "Gagal reschedule daily Supervisi Sales.",
 				})
 			}
 		}
