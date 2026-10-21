@@ -30,12 +30,47 @@ func generatePerusahaanID(tx *gorm.DB) (string, error) {
 }
 
 // GET /perusahaan - List all companies
+// Per item disertakan totalProyekPengadaan — jumlah proyek pengadaan barang
+// per perusahaan ( TrackingPenawaran non-dibatalkan ), di-aggregate sekali
+// query di SQL, dipakai kolom "Total Proyek Pengadaan Barang" di daftar.
+type PerusahaanListItem struct {
+	models.Perusahaan
+	TotalProyekPengadaan int64 `json:"totalProyekPengadaan"`
+}
+
 func GetPerusahaanList(c echo.Context) error {
 	var companies []models.Perusahaan
 	if err := config.DB.Find(&companies).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, companies)
+
+	type pengadaanCount struct {
+		PerusahaanID string
+		Total        int64
+	}
+	var counts []pengadaanCount
+	if err := config.DB.Model(&models.TrackingPenawaran{}).
+		Select(`"perusahaan_id" AS perusahaan_id, COUNT(*) AS total`).
+		Where(`"status" != ?`, models.StatusDibatalkan).
+		Group(`"perusahaan_id"`).
+		Scan(&counts).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	countByPerusahaan := make(map[string]int64, len(counts))
+	for _, row := range counts {
+		countByPerusahaan[row.PerusahaanID] = row.Total
+	}
+
+	items := make([]PerusahaanListItem, 0, len(companies))
+	for _, company := range companies {
+		items = append(items, PerusahaanListItem{
+			Perusahaan:           company,
+			TotalProyekPengadaan: countByPerusahaan[company.ID],
+		})
+	}
+
+	return c.JSON(http.StatusOK, items)
 }
 
 // GET /perusahaan/:id - Get detail company

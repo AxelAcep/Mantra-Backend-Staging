@@ -24,6 +24,12 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		}
 	}
 
+	// ── Daily Supervisi Sales DITERIMA → auto-ACC Review Internal ───────────
+	if err := handleSupervisiSalesDiterima(tx, a); err != nil {
+		fmt.Println(">>> Error handleSupervisiSalesDiterima:", err)
+		return err
+	}
+
 	// ── Activity Pembelian Barang Implementasi → auto-buat Activity Pengantaran ──
 	if err := handlePembelianBarangDiterima(tx, a); err != nil {
 		fmt.Println(">>> Error handlePembelianBarangDiterima:", err)
@@ -381,6 +387,41 @@ func handleQuotationDiterima(tx *gorm.DB, a *Activity) error {
 	} else {
 		appendReviewInternalLogDirect(&review, "ACC Otomatis", "Admin Sekertaris & Manager Ops otomatis ACC setelah daily Pengecekan Penawaran selesai. Menunggu approval Supervisi Sales.", a.PegawaiID, namaPegawai)
 	}
+	tx.Save(&review)
+
+	return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)
+}
+
+// ─── Daily Supervisi Sales DITERIMA → auto-ACC Review Internal ───────────────
+// Mirror handleQuotationDiterima, tapi cuma set AccSupervisiSales (bukan
+// AccAdminDirektur/AccManajerOps) -- daily ini punya pemilik & activity ID
+// sendiri (ActivitySupervisiSalesID), terpisah dari ActivityAdminID.
+
+func handleSupervisiSalesDiterima(tx *gorm.DB, a *Activity) error {
+	var review ReviewInternal
+	if err := tx.Where("activity_supervisi_sales_id = ?", a.ID).First(&review).Error; err != nil {
+		// Bukan activity Supervisi Sales, skip diam-diam.
+		return nil
+	}
+
+	namaPegawai := ""
+	var pegawai Pegawai
+	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
+		namaPegawai = pegawai.Nama
+	}
+
+	wasPerluTindakan := review.Status == StatusPerluTindakan
+
+	// Guard idempotency, sama kayak handleQuotationDiterima.
+	if review.AccSupervisiSales && !wasPerluTindakan {
+		fmt.Println(">>> AccSupervisiSales udah pernah ke-ACC otomatis, skip:", review.ID)
+		return nil
+	}
+
+	fmt.Println(">>> Daily Approval Supervisi Sales selesai, ACC Supervisi Sales otomatis")
+
+	review.AccSupervisiSales = true
+	appendReviewInternalLogDirect(&review, "ACC Otomatis (Supervisi Sales)", "Supervisi Sales otomatis ACC setelah daily approval selesai.", a.PegawaiID, namaPegawai)
 	tx.Save(&review)
 
 	return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)

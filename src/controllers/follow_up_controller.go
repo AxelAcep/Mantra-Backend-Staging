@@ -981,7 +981,7 @@ func GetPegawaiSupervisiMaintenance(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data user."})
 	}
 
-	var result []PegawaiSimple
+	result := []PegawaiSimple{}
 	if err := config.DB.
 		Model(&models.Pegawai{}).
 		Select("id as pegawai_id, nama as nama").

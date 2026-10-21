@@ -152,9 +152,11 @@ type ReviewInternal struct {
 	ActivityAdmin       *Activity              `gorm:"foreignKey:ActivityAdminID;references:ID"     json:"activityAdmin,omitempty"`
 	AccAdminDirektur    bool                   `gorm:"not null;default:false"                       json:"accAdminDirektur"`
 	AccManajerOps       bool                   `gorm:"not null;default:false"                       json:"accManajerOps"`
-	// Gate approval manual (mirip AccDirekturKomisaris di Persetujuan
-	// Manajemen) — HARUS dipencet tombol approve oleh role SUPERVISI + divisi
-	// SALES, gak ke-auto-set kayak 2 field di atas. Lihat models.TryFinalizeReviewInternal.
+	// Sama mekanisme kayak ActivityAdminID di atas: daily sendiri buat
+	// Supervisi Sales, auto-ACC begitu daily ini DITERIMA. Lihat
+	// handleSupervisiSalesDiterima di activity_hooks.go.
+	ActivitySupervisiSalesID *string           `gorm:"index"                                        json:"activitySupervisiSalesId,omitempty"`
+	ActivitySupervisiSales   *Activity         `gorm:"foreignKey:ActivitySupervisiSalesID;references:ID" json:"activitySupervisiSales,omitempty"`
 	AccSupervisiSales   bool                   `gorm:"not null;default:false"                       json:"accSupervisiSales"`
 	Status              StatusActivity         `gorm:"not null;default:ON_PROGRESS;index"           json:"status"`
 	LogAktivitas        []LogReviewInternal    `gorm:"serializer:json;default:'[]'"                 json:"logs"`

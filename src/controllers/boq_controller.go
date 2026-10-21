@@ -244,6 +244,30 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity."})
 		}
 
+		// Buat Daily Activity untuk Supervisi Sales (gate approval-nya kini
+		// ikut daily, sama kayak Admin Sekertaris, bukan tombol manual lagi).
+		var activitySupervisiSalesID *string
+		if supervisiSalesID := models.FindKadivDivisi(config.DB, models.DivisiSales); supervisiSalesID != "" {
+			id := generateActivityID()
+			dailySupervisiSales := models.Activity{
+				ID:            id,
+				PegawaiID:     supervisiSalesID,
+				TerkaitPO:     &nomorPenawaranReview,
+				Perusahaan:    &namaPerusahaan,
+				Kategori:      models.KategoriApprovalUser,
+				Judul:         "Approval Review Internal " + namaPerusahaan,
+				Deskripsi:     "Activity otomatis approval Supervisi Sales untuk penawaran #" + tracking.NomorPenawaran,
+				WaktuMulai:    time.Now(),
+				TargetSelesai: deadline,
+				Status:        models.StatusOnProgress,
+			}
+			if err := config.DB.Create(&dailySupervisiSales).Error; err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat daily activity Supervisi Sales."})
+			}
+			models.NotifTugasPengadaan(config.DB, &dailySupervisiSales, trackingID, tracking.LokasiProyek)
+			activitySupervisiSalesID = &id
+		}
+
 		// Notifikasi Tahap 2→3 (target_hari_ini.md): Daily Pengecekan
 		// Penawaran ke Admin Sekertaris + MO.
 		models.NotifTugasPengadaan(config.DB, &dailyAdmin, trackingID, tracking.LokasiProyek)
@@ -275,20 +299,24 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 
 		if !reviewExists {
 			review := models.ReviewInternal{
-				ID:                  uuid.New().String(),
-				TrackingPenawaranID: trackingID,
-				ActivityAdminID:     &activityAdminID,
-				AccAdminDirektur:    false,
-				AccManajerOps:       false,
-				Status:              models.StatusOnProgress,
-				CreatedAt:           time.Now(),
-				UpdatedAt:           time.Now(),
+				ID:                       uuid.New().String(),
+				TrackingPenawaranID:      trackingID,
+				ActivityAdminID:          &activityAdminID,
+				ActivitySupervisiSalesID: activitySupervisiSalesID,
+				AccAdminDirektur:         false,
+				AccManajerOps:            false,
+				Status:                   models.StatusOnProgress,
+				CreatedAt:                time.Now(),
+				UpdatedAt:                time.Now(),
 			}
 			if err := config.DB.Create(&review).Error; err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal membuat Review Internal."})
 			}
 		} else {
 			existingReview.ActivityAdminID = &activityAdminID
+			if activitySupervisiSalesID != nil {
+				existingReview.ActivitySupervisiSalesID = activitySupervisiSalesID
+			}
 			config.DB.Save(&existingReview)
 		}
 	}
