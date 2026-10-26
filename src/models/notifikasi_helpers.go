@@ -176,6 +176,7 @@ func FindKadivDivisi(tx *gorm.DB, divisi Divisi) string {
 	err := tx.
 		Joins(`JOIN "User" ON "User".pegawai_id = "Pegawai".id`).
 		Where(`"Pegawai".divisi = ? AND "User".role = ?`, divisi, RoleSupervisi).
+		Where(`"User".active_status IS NULL OR "User".active_status = true`).
 		First(&p).Error
 	if err != nil {
 		return ""
