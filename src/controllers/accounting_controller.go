@@ -194,6 +194,10 @@ func CreateAccounting(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// Notifikasi "Siapkan Termin Pembayaran" sudah tidak relevan — termin
+	// berhasil dibuat.
+	models.MarkNotifPengadaanReadByJudulPrefix(config.DB, trackingID, "Siapkan Termin Pembayaran")
+
 	return c.JSON(http.StatusCreated, termin)
 }
 

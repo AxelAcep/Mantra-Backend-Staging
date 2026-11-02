@@ -202,6 +202,10 @@ func UpdateSubTotalBoQ(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
+		// Notifikasi "Pengisian Harga BoQ" sudah tidak relevan — harga
+		// sudah lengkap dan step pindah ke Review Internal.
+		models.MarkNotifPengadaanReadByJudulPrefix(config.DB, trackingID, "Pengisian Harga BoQ")
+
 		// Tentukan Admin Sekertaris untuk daily
 		var adminPegawai models.Pegawai
 		if divisiStr == string(models.DivisiAdminSekertaris) {
@@ -612,6 +616,10 @@ func UpdateStatusBoQ(c echo.Context) error {
 					"step_saat_ini": models.StepReviewInternal,
 					"status":        models.StatusOnProgress,
 				})
+
+			// Notifikasi "Pengisian Harga BoQ" sudah tidak relevan — harga
+			// sudah lengkap dan step pindah ke Review Internal.
+			models.MarkNotifPengadaanReadByJudulPrefix(config.DB, trackingID, "Pengisian Harga BoQ")
 
 			// Tentukan Admin Sekertaris untuk daily
 			var adminPegawai models.Pegawai

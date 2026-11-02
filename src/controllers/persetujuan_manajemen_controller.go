@@ -131,6 +131,12 @@ func UpdateStatusPersetujuanManajemen(c echo.Context) error {
 				"status":        models.StatusOnProgress,
 			})
 
+		// Notifikasi "menunggu approval" untuk tracking ini sudah tidak
+		// relevan — aksi Approve/Tolak baru dilakukan. Padamkan untuk semua
+		// penerima (Direktur/Komisaris + fan-out MO) supaya tidak tampil
+		// basi ("masih di Persetujuan Manajemen") setelah proses lanjut.
+		models.MarkNotifPengadaanReadByJudulPrefix(config.DB, trackingID, "Persetujuan Manajemen Menunggu Approval")
+
 		// --- Backfill daily step 4 untuk Admin Sekertaris ---
 		// Daily pengingat approval kini dibuat otomatis saat tracking MASUK
 		// step 4 (TryFinalizeReviewInternal). Blok ini hanya fallback untuk

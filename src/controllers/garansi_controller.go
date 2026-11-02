@@ -173,6 +173,7 @@ func KonfigurasiGaransi(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengkonfigurasi garansi."})
 		}
+		markKonfigurasiGaransiReadIfAllDone(config.DB, trackingID)
 		updated, _ := preloadGaransiList(trackingID)
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message": "Garansi dikonfigurasi sebagai tidak ada garansi.",
@@ -241,12 +242,32 @@ func KonfigurasiGaransi(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengkonfigurasi timeline Garansi."})
 	}
 
+	markKonfigurasiGaransiReadIfAllDone(config.DB, trackingID)
+
 	updated, _ := preloadGaransiList(trackingID)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message": "Timeline Garansi berhasil dikonfigurasi.",
 		"data":    updated,
 	})
+}
+
+// markKonfigurasiGaransiReadIfAllDone mematikan notifikasi "Konfigurasi
+// Garansi" untuk suatu tracking HANYA setelah semua baris Garansi-nya
+// terkonfigurasi. Satu tracking bisa punya beberapa Garansi (PAC/FIRE/
+// BATTERY, masing-masing dibuat dari BAST kategorinya dengan notif judul
+// identik) — mematikan setelah konfigurasi pertama akan menyembunyikan
+// notif yang masih menunggu konfigurasi kategori lain.
+func markKonfigurasiGaransiReadIfAllDone(db *gorm.DB, trackingID string) {
+	var pending int64
+	if err := db.Model(&models.Garansi{}).
+		Where(`"tracking_penawaran_id" = ? AND "status" = ?`, trackingID, models.StatusGaransiBelumDikonfigurasi).
+		Count(&pending).Error; err != nil {
+		return
+	}
+	if pending == 0 {
+		models.MarkNotifPengadaanReadByJudulPrefix(db, trackingID, "Konfigurasi Garansi")
+	}
 }
 
 // ── Update Tanggal Kunjungan per Bulan ───────────────────────────────────────

@@ -342,3 +342,22 @@ func NotifPengadaanEventStep(tx *gorm.DB, judul, pesan, trackingID, terkaitPO, p
 
 	fanoutMONotifikasiPengadaan(tx, seen, activityID, k, judul, pesan)
 }
+
+// MarkNotifPengadaanReadByJudulPrefix menandai semua notifikasi tipe
+// PENAWARAN milik suatu tracking yang judulnya diawali prefix tertentu
+// sebagai sudah dibaca. Dipakai saat aksi yang diminta sebuah notifikasi
+// sudah selesai dilakukan (mis. Direktur meng-approve Persetujuan
+// Manajemen) agar notifikasi permintaan-aksi tidak tetap tampil basi
+// ("menunggu approval" padahal proses sudah lanjut ke tahap berikutnya).
+// Best-effort: error di-log, tidak menggagalkan proses bisnis utama.
+func MarkNotifPengadaanReadByJudulPrefix(tx *gorm.DB, trackingID, judulPrefix string) {
+	if trackingID == "" || judulPrefix == "" {
+		return
+	}
+	if err := tx.Model(&Notifikasi{}).
+		Where(`"Notifikasi".tracking_penawaran_id = ? AND "Notifikasi".tipe = ? AND "Notifikasi".is_read = false AND "Notifikasi".judul LIKE ?`,
+			trackingID, NotifTipePengadaan, judulPrefix+"%").
+		Update("is_read", true).Error; err != nil {
+		fmt.Println(">>> Gagal menandai notifikasi", judulPrefix, "sebagai dibaca:", err)
+	}
+}

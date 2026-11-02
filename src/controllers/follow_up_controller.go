@@ -1401,6 +1401,11 @@ func KonfirmasiDokumenPO(c echo.Context) error {
 		)
 	}
 
+	// Notifikasi "Konfirmasi Dokumen PO Menunggu" sudah tidak relevan —
+	// aksi Direktur/Komisaris (ACC maupun Tolak) baru dilakukan. Kalau
+	// ditolak, notifikasi baru dibuat ulang saat rantai Stage 4 selesai.
+	models.MarkNotifPengadaanReadByJudulPrefix(tx, trackingID, "Konfirmasi Dokumen PO Menunggu")
+
 	if err := tx.Commit().Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal commit transaksi."})
 	}

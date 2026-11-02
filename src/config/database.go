@@ -81,11 +81,87 @@ func createCompositeIndexes(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_notifikasi_pegawai_read ON "Notifikasi" ("pegawai_id", "is_read")`,
 		`DROP INDEX IF EXISTS idx_kpi_unique`,
 		`CREATE UNIQUE INDEX idx_kpi_unique ON "KPIPegawai" ("pegawai_id", "bulan", "tahun", "minggu")`,
+		// Cleanup notifikasi aksi pengadaan yang sudah tidak relevan (bug
+		// lama: notif "menunggu aksi" tidak dipensiunkan saat aksi selesai).
+		// Idempotent — hanya menyentuh baris yang masih unread.
+
+		// Persetujuan Manajemen: tracking sudah melewati step PERSETUJUAN_MANAJEMEN.
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Persetujuan Manajemen Menunggu Approval%'
+		   AND "tracking_penawaran_id" IN (
+		     SELECT id FROM "TrackingPenawaran" WHERE "step_saat_ini" <> 'PERSETUJUAN_MANAJEMEN'
+		   )`,
+		// Review Internal: tracking sudah tidak di step REVIEW_INTERNAL
+		// (lanjut ke Persetujuan Manajemen atau mundur ke Penyusunan BoQ).
+		// Prefix "Review Internal - " tidak menyentuh "Review Internal Selesai - ".
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Review Internal - %'
+		   AND "tracking_penawaran_id" IN (
+		     SELECT id FROM "TrackingPenawaran" WHERE "step_saat_ini" <> 'REVIEW_INTERNAL'
+		   )`,
+		// Pengisian Harga BoQ: tracking sudah tidak di step PENYUSUNAN_BOQ.
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Pengisian Harga BoQ%'
+		   AND "tracking_penawaran_id" IN (
+		     SELECT id FROM "TrackingPenawaran" WHERE "step_saat_ini" <> 'PENYUSUNAN_BOQ'
+		   )`,
+		// Konfirmasi Dokumen PO: FollowUp tidak lagi menunggu konfirmasi
+		// Direktur/Komisaris (stage ≠ 5 — sudah ACC ke 6 atau ditolak balik 4).
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Konfirmasi Dokumen PO Menunggu%'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM "FollowUp" f
+		     WHERE f."tracking_penawaran_id" = "Notifikasi"."tracking_penawaran_id"
+		       AND f."stage" = 5
+		   )`,
+		// Lengkapi Data Order: data order pada Implementasi sudah lengkap.
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Lengkapi Data Order%'
+		   AND "tracking_penawaran_id" IN (
+		     SELECT "tracking_penawaran_id" FROM "Implementasi"
+		     WHERE "no_po" <> '' AND "no_wo" <> '' AND "waktu_pengerjaan" IS NOT NULL
+		   )`,
+		// Siapkan Termin Pembayaran: TerminPembayaran sudah dibuat.
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Siapkan Termin Pembayaran%'
+		   AND "tracking_penawaran_id" IN (
+		     SELECT "tracking_penawaran_id" FROM "TerminPembayaran"
+		   )`,
+		// Konfigurasi Garansi: semua Garansi pada tracking sudah dikonfigurasi
+		// (masih ada Garansi = "kuning menunggu konfigurasi" → belum dipensiunkan).
+		`UPDATE "Notifikasi" SET "is_read" = true
+		 WHERE "is_read" = false
+		   AND "tipe" = 'PENAWARAN'
+		   AND "judul" LIKE 'Konfigurasi Garansi%'
+		   AND EXISTS (
+		     SELECT 1 FROM "Garansi" g
+		     WHERE g."tracking_penawaran_id" = "Notifikasi"."tracking_penawaran_id"
+		   )
+		   AND NOT EXISTS (
+		     SELECT 1 FROM "Garansi" g
+		     WHERE g."tracking_penawaran_id" = "Notifikasi"."tracking_penawaran_id"
+		       AND g."status" = 'BELUM_DIKONFIGURASI'
+		   )`,
 	}
 
-	for _, sql := range indexes {
+	for i, sql := range indexes {
 		if err := db.Exec(sql).Error; err != nil {
-			return err
+			// Lanjut ke statement berikutnya: index IF NOT EXISTS dan
+			// cleanup notifikasi bersifat idempotent — satu kegagalan tidak
+			// boleh mematikan sisa index/cleanup di belakangnya.
+			log.Printf("Warning: statement migrasi ke-%d gagal: %v", i+1, err)
 		}
 	}
 	return nil

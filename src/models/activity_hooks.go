@@ -450,6 +450,11 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 		return err
 	}
 
+	// Notifikasi "Review Internal - ... menunggu persetujuan" sudah tidak
+	// relevan setelah finalize — padamkan untuk semua penerima (Kadiv
+	// Presales/Sales + fan-out MO).
+	MarkNotifPengadaanReadByJudulPrefix(tx, review.TrackingPenawaranID, "Review Internal - ")
+
 	// Notifikasi Tahap 3 (target_hari_ini.md): Review Internal selesai →
 	// Kadiv Sales + MO. Dibuat SEBELUM step_saat_ini diupdate supaya
 	// "Tahap Proses Pengadaan" tampil "Review Internal" (bukan

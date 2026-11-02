@@ -247,6 +247,12 @@ func UpdateDetailImplementasi(c echo.Context) error {
 			Update("nomor_po", body.NoPO)
 	}
 
+	// Notifikasi "Lengkapi Data Order" tidak relevan lagi setelah ketiga
+	// field yang diminta (No. PO, No. WO, Waktu Pengerjaan) lengkap.
+	if impl.NoPO != "" && impl.NoWO != "" && impl.WaktuPengerjaan != nil {
+		models.MarkNotifPengadaanReadByJudulPrefix(config.DB, trackingID, "Lengkapi Data Order")
+	}
+
 	// Catat perubahan
 	var changes []string
 
