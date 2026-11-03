@@ -965,7 +965,7 @@ func appendFollowUpLog(followUp *models.FollowUp, aksi, keterangan, pegawaiID, n
 }
 
 // ============================================
-// 1. GET Pegawai (RoleSupervisi + Divisi Maintenance PAC/Fire)
+// 1. GET Pegawai (RoleProjek) -- kandidat Admin Proyek
 // ============================================
 func GetPegawaiSupervisiMaintenance(c echo.Context) error {
 	type PegawaiSimple struct {
@@ -976,7 +976,7 @@ func GetPegawaiSupervisiMaintenance(c echo.Context) error {
 	var pegawaiIDs []string
 	if err := config.DB.
 		Model(&models.User{}).
-		Where("role = ?", models.RoleSupervisi).
+		Where("role = ? AND (active_status IS NULL OR active_status = true)", models.RoleProjek).
 		Pluck("pegawai_id", &pegawaiIDs).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data user."})
 	}
@@ -986,7 +986,6 @@ func GetPegawaiSupervisiMaintenance(c echo.Context) error {
 		Model(&models.Pegawai{}).
 		Select("id as pegawai_id, nama as nama").
 		Where("id IN ?", pegawaiIDs).
-		Where("divisi IN ?", []models.Divisi{models.DivisiMaintenancePAC, models.DivisiMaintenanceFire}).
 		Where("deleted_at IS NULL").
 		Scan(&result).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Gagal mengambil data pegawai."})

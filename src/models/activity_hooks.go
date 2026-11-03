@@ -24,12 +24,6 @@ func (a *Activity) AfterUpdate(tx *gorm.DB) error {
 		}
 	}
 
-	// ── Daily Supervisi Sales DITERIMA → auto-ACC Review Internal ───────────
-	if err := handleSupervisiSalesDiterima(tx, a); err != nil {
-		fmt.Println(">>> Error handleSupervisiSalesDiterima:", err)
-		return err
-	}
-
 	// ── Activity Pembelian Barang Implementasi → auto-buat Activity Pengantaran ──
 	if err := handlePembelianBarangDiterima(tx, a); err != nil {
 		fmt.Println(">>> Error handlePembelianBarangDiterima:", err)
@@ -392,50 +386,13 @@ func handleQuotationDiterima(tx *gorm.DB, a *Activity) error {
 	return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)
 }
 
-// ─── Daily Supervisi Sales DITERIMA → auto-ACC Review Internal ───────────────
-// Mirror handleQuotationDiterima, tapi cuma set AccSupervisiSales (bukan
-// AccAdminDirektur/AccManajerOps) -- daily ini punya pemilik & activity ID
-// sendiri (ActivitySupervisiSalesID), terpisah dari ActivityAdminID.
-
-func handleSupervisiSalesDiterima(tx *gorm.DB, a *Activity) error {
-	var review ReviewInternal
-	if err := tx.Where("activity_supervisi_sales_id = ?", a.ID).First(&review).Error; err != nil {
-		// Bukan activity Supervisi Sales, skip diam-diam.
-		return nil
-	}
-
-	namaPegawai := ""
-	var pegawai Pegawai
-	if err := tx.Where("id = ?", a.PegawaiID).First(&pegawai).Error; err == nil {
-		namaPegawai = pegawai.Nama
-	}
-
-	wasPerluTindakan := review.Status == StatusPerluTindakan
-
-	// Guard idempotency, sama kayak handleQuotationDiterima.
-	if review.AccSupervisiSales && !wasPerluTindakan {
-		fmt.Println(">>> AccSupervisiSales udah pernah ke-ACC otomatis, skip:", review.ID)
-		return nil
-	}
-
-	fmt.Println(">>> Daily Approval Supervisi Sales selesai, ACC Supervisi Sales otomatis")
-
-	review.AccSupervisiSales = true
-	appendReviewInternalLogDirect(&review, "ACC Otomatis (Supervisi Sales)", "Supervisi Sales otomatis ACC setelah daily approval selesai.", a.PegawaiID, namaPegawai)
-	tx.Save(&review)
-
-	return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)
-}
-
-// TryFinalizeReviewInternal ngecek 3 syarat approval Review Internal (Admin
-// Sekertaris, Manager Ops -- dua-duanya auto-set begitu daily Pengecekan
-// Penawaran selesai -- dan Supervisi Sales -- WAJIB dipencet manual lewat
-// endpoint ACC). Begitu ketiganya lengkap, baru Status jadi SELESAI dan lanjut
-// bikin Persetujuan Manajemen. Dipanggil dari 2 titik: hook otomatis (pas
-// daily selesai) dan endpoint manual ACC (pas Supervisi Sales approve) --
-// gak peduli urutan mana yang duluan lengkap.
+// TryFinalizeReviewInternal ngecek syarat approval Review Internal: Admin
+// Sekertaris & Manager Ops, dua-duanya auto-set begitu daily Pengecekan
+// Penawaran selesai. Supervisi Sales TIDAK lagi jadi gate (dihapus) -- begitu
+// dua syarat ini lengkap, Status langsung SELESAI, lanjut bikin Persetujuan
+// Manajemen.
 func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, namaPegawai string) error {
-	if !(review.AccAdminDirektur && review.AccManajerOps && review.AccSupervisiSales) {
+	if !(review.AccAdminDirektur && review.AccManajerOps) {
 		fmt.Println(">>> Review Internal belum lengkap approval-nya, skip finalize:", review.ID)
 		return nil
 	}
@@ -445,7 +402,7 @@ func TryFinalizeReviewInternal(tx *gorm.DB, review *ReviewInternal, pegawaiID, n
 	}
 
 	review.Status = StatusSelesai
-	appendReviewInternalLogDirect(review, "Review Internal Selesai", "Semua approval lengkap (Admin Sekertaris, Manager Ops, Supervisi Sales), lanjut ke Persetujuan Manajemen", pegawaiID, namaPegawai)
+	appendReviewInternalLogDirect(review, "Review Internal Selesai", "Semua approval lengkap (Admin Sekertaris, Manager Ops), lanjut ke Persetujuan Manajemen", pegawaiID, namaPegawai)
 	if err := tx.Save(review).Error; err != nil {
 		return err
 	}

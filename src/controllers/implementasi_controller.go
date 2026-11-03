@@ -170,7 +170,7 @@ func GetDetailImplementasi(c echo.Context) error {
 func UpdateDetailImplementasi(c echo.Context) error {
 	trackingID := c.Param("id")
 
-	pegawaiID, namaPegawai, roleStr, divisiStr, ok := getImplementasiClaims(c)
+	pegawaiID, namaPegawai, roleStr, _, ok := getImplementasiClaims(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "Unauthorized.",
@@ -200,8 +200,8 @@ func UpdateDetailImplementasi(c echo.Context) error {
 		})
 	}
 
-	// Hak ubah No. WO hanya untuk Master atau Admin Proyek (MAINTENANCE_PAC / MAINTENANCE_FIRE)
-	isAdminProyek := divisiStr == string(models.DivisiMaintenancePAC) || divisiStr == string(models.DivisiMaintenanceFire)
+	// Hak ubah No. WO hanya untuk Master atau Admin Proyek (role PROJEK)
+	isAdminProyek := roleStr == string(models.RoleProjek)
 	canEditWO := roleStr == string(models.RoleMaster) || isAdminProyek
 
 	formatWODate := func(t *time.Time) string {

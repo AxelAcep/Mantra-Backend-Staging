@@ -1667,7 +1667,9 @@ func GetPegawaiByDivisi(c echo.Context) error {
 		Where(`"User".id IS NULL OR "User".active_status IS NULL OR "User".active_status = true`)
 
 	if divisi != "" {
-		query = query.Where(`"Pegawai".divisi = ?`, divisi)
+		// Dukung multi-divisi lewat ?divisi=SALES,ADMIN_SEKERTARIS (mis.
+		// dropdown PIC Request yang sekarang bisa diisi Sales atau Sekertaris).
+		query = query.Where(`"Pegawai".divisi IN ?`, strings.Split(divisi, ","))
 	}
 
 	if err := query.Order("nama ASC").Find(&pegawai).Error; err != nil {
