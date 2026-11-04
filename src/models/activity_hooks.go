@@ -351,35 +351,35 @@ func handleQuotationDiterima(tx *gorm.DB, a *Activity) error {
 	}
 
 	// wasPerluTindakan: daily ini abis di-reschedule ulang (ON_PROGRESS ->
-	// DITERIMA lagi) setelah Supervisi Sales nolak -- kalau iya, WAJIB
-	// diproses ulang biarpun AccAdminDirektur/AccManajerOps masih true dari
-	// sebelumnya (guard idempotency di bawah gak boleh nge-skip ini).
+	// DITERIMA lagi) setelah ditolak -- kalau iya, WAJIB diproses ulang
+	// biarpun AccAdminDirektur/AccManajerOps masih true dari sebelumnya
+	// (guard idempotency di bawah gak boleh nge-skip ini).
 	wasPerluTindakan := review.Status == StatusPerluTindakan
 
-	// Guard idempotency: jangan re-ACC otomatis kalau udah pernah kejadian
-	// (dan bukan kasus revisi setelah ditolak).
+	// Guard idempotency: kalau udah pernah ke-ACC otomatis (dan bukan kasus
+	// revisi setelah ditolak), gak usah log ulang -- tapi tetep coba
+	// finalize, buat jaga-jaga review lama yang Status-nya belum sempat
+	// ke-update ke SELESAI (TryFinalizeReviewInternal sendiri udah no-op
+	// kalau Status udah SELESAI).
 	if review.AccAdminDirektur && review.AccManajerOps && !wasPerluTindakan {
-		fmt.Println(">>> Review Internal udah pernah ke-ACC otomatis, skip:", review.ID)
-		return nil
+		fmt.Println(">>> Review Internal udah pernah ke-ACC otomatis, coba finalize ulang:", review.ID)
+		return TryFinalizeReviewInternal(tx, &review, a.PegawaiID, namaPegawai)
 	}
 
 	fmt.Println(">>> Daily Pengecekan Penawaran selesai, ACC Admin Sekertaris & Manager Ops otomatis")
 
-	// ACC Admin Sekertaris & Manager Ops otomatis begitu daily-nya selesai.
-	// TAPI gak langsung Selesai -- masih nunggu 1 gate manual lagi: approval
-	// Supervisi Sales (AccSupervisiSales), mirip AccDirekturKomisaris di
-	// Persetujuan Manajemen. Lihat TryFinalizeReviewInternal.
+	// ACC Admin Sekertaris & Manager Ops otomatis begitu daily-nya selesai,
+	// langsung dicek finalize (gak ada gate lain lagi) lewat
+	// TryFinalizeReviewInternal.
 	review.AccAdminDirektur = true
 	review.AccManajerOps = true
 	if wasPerluTindakan {
-		// Daily udah direvisi & disetujui lagi -> Review Internal siap
-		// dikonfirmasi Supervisi Sales lagi, gak perlu proses manual
-		// "konfirmasi ulang" terpisah.
+		// Daily udah direvisi & disetujui lagi -> Review Internal lanjut lagi.
 		review.Status = StatusOnProgress
-		appendReviewInternalLogDirect(&review, "ACC Otomatis (Revisi)", "Admin Sekertaris & Manager Ops otomatis ACC lagi setelah daily Pengecekan Penawaran direvisi & disetujui ulang. Menunggu approval Supervisi Sales lagi.", a.PegawaiID, namaPegawai)
+		appendReviewInternalLogDirect(&review, "ACC Otomatis (Revisi)", "Admin Sekertaris & Manager Ops otomatis ACC lagi setelah daily Pengecekan Penawaran direvisi & disetujui ulang.", a.PegawaiID, namaPegawai)
 		tx.Model(&TrackingPenawaran{}).Where("id = ?", review.TrackingPenawaranID).Update("status", StatusOnProgress)
 	} else {
-		appendReviewInternalLogDirect(&review, "ACC Otomatis", "Admin Sekertaris & Manager Ops otomatis ACC setelah daily Pengecekan Penawaran selesai. Menunggu approval Supervisi Sales.", a.PegawaiID, namaPegawai)
+		appendReviewInternalLogDirect(&review, "ACC Otomatis", "Admin Sekertaris & Manager Ops otomatis ACC setelah daily Pengecekan Penawaran selesai.", a.PegawaiID, namaPegawai)
 	}
 	tx.Save(&review)
 
