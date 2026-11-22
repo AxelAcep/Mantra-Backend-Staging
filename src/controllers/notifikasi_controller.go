@@ -141,6 +141,40 @@ func GetNotifikasiList(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Terjadi kesalahan pada server."})
 	}
 
+	// Live-resolve Tahapan & StepCode dari step_saat_ini terkini di
+	// TrackingPenawaran (bukan snapshot saat notifikasi dibuat) agar
+	// notifikasi selalu menampilkan tahap aktual proyek.
+	if filter == "penawaran" {
+		trackingStepMap := make(map[string]models.StepPenawaran)
+		var trackingIDs []string
+		for _, n := range notifikasi {
+			if n.TrackingPenawaranID != "" {
+				trackingIDs = append(trackingIDs, n.TrackingPenawaranID)
+			}
+		}
+		if len(trackingIDs) > 0 {
+			type trackingStep struct {
+				ID          string
+				StepSaatIni models.StepPenawaran
+			}
+			var steps []trackingStep
+			if err := config.DB.Model(&models.TrackingPenawaran{}).
+				Where("id IN ?", trackingIDs).
+				Select("id", "step_saat_ini").
+				Find(&steps).Error; err == nil {
+				for _, s := range steps {
+					trackingStepMap[s.ID] = s.StepSaatIni
+				}
+				for i := range notifikasi {
+					if step, ok := trackingStepMap[notifikasi[i].TrackingPenawaranID]; ok {
+						notifikasi[i].Tahapan = models.LabelTahapan(step)
+						notifikasi[i].StepCode = string(step)
+					}
+				}
+			}
+		}
+	}
+
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
 
 	return c.JSON(http.StatusOK, map[string]interface{}{

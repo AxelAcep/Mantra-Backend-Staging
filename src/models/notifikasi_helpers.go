@@ -15,9 +15,9 @@ const (
 	NotifTipePengadaan     = "PENAWARAN"
 )
 
-// labelTahapan memetakan StepPenawaran ke label tampilan untuk notifikasi
+// LabelTahapan memetakan StepPenawaran ke label tampilan untuk notifikasi
 // pengadaan (mis. daily Presales di tahap PENYUSUNAN_BOQ → "Penyusunan BOQ").
-func labelTahapan(step StepPenawaran) string {
+func LabelTahapan(step StepPenawaran) string {
 	switch step {
 	case StepPermintaanMasuk:
 		return "Permintaan Masuk"
@@ -72,7 +72,7 @@ func resolveKonteksPengadaan(tx *gorm.DB, terkaitPO string) konteksPengadaan {
 		k.trackingID = tracking.ID
 		k.perusahaan = tracking.Perusahaan.Nama
 		k.lokasiProyek = tracking.LokasiProyek
-		k.tahapan = labelTahapan(tracking.StepSaatIni)
+		k.tahapan = LabelTahapan(tracking.StepSaatIni)
 		k.stepCode = tracking.StepSaatIni
 		return k
 	}
@@ -86,7 +86,7 @@ func resolveKonteksPengadaan(tx *gorm.DB, terkaitPO string) konteksPengadaan {
 			First(&tracking2, "id = ?", impl.TrackingPenawaranID).Error; err == nil {
 			k.perusahaan = tracking2.Perusahaan.Nama
 			k.lokasiProyek = tracking2.LokasiProyek
-			k.tahapan = labelTahapan(tracking2.StepSaatIni)
+			k.tahapan = LabelTahapan(tracking2.StepSaatIni)
 			k.stepCode = tracking2.StepSaatIni
 		}
 	}
@@ -114,7 +114,7 @@ func resolveKonteksByTrackingID(tx *gorm.DB, k *konteksPengadaan) {
 			k.lokasiProyek = tracking.LokasiProyek
 		}
 		if k.tahapan == "" {
-			k.tahapan = labelTahapan(tracking.StepSaatIni)
+			k.tahapan = LabelTahapan(tracking.StepSaatIni)
 		}
 		if k.stepCode == "" {
 			k.stepCode = tracking.StepSaatIni
@@ -273,7 +273,7 @@ func NotifTugasPengadaanStep(tx *gorm.DB, act *Activity, trackingID, lokasiProye
 	// Override step eksplisit menang atas hasil resolve (stepSaatIni).
 	if step != "" {
 		k.stepCode = step
-		k.tahapan = labelTahapan(step)
+		k.tahapan = LabelTahapan(step)
 	}
 
 	seen := map[string]bool{}
@@ -328,7 +328,7 @@ func NotifPengadaanEventStep(tx *gorm.DB, judul, pesan, trackingID, terkaitPO, p
 	// Override step eksplisit menang atas hasil resolve (stepSaatIni).
 	if step != "" {
 		k.stepCode = step
-		k.tahapan = labelTahapan(step)
+		k.tahapan = LabelTahapan(step)
 	}
 
 	seen := map[string]bool{}
